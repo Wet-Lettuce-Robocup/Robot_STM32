@@ -22,8 +22,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include <stdlib.h>
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,6 +36,8 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 1.0, 0.3, 0.01)
 
 /* USER CODE END PM */
 
@@ -76,8 +76,8 @@ struct PID_Controller {
 };
 
 struct Motor {
-	struct Encoder *encoder;
-	struct PID_Controller *controller;
+	struct Encoder encoder;
+	struct PID_Controller controller;
 	TIM_HandleTypeDef *clock;
 };
 
@@ -98,10 +98,7 @@ static void MX_TIM5_Init(void);
 void Encoder_Init(struct Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
 void PID_Init(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder,
 		float k_p, float k_i, float k_d);
-void PID_Init_Default(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder);
 void Motor_Init(struct Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
-
-void Motor_Cleanup(struct Motor *motor);
 
 void setup();
 void loop();
@@ -612,31 +609,8 @@ void PID_Init_Default(struct PID_Controller *controller, TIM_HandleTypeDef *cloc
 void Motor_Init(struct Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim) {
 	motor->clock = clock;
 
-	motor->encoder = malloc(sizeof(struct Encoder));
-
-	if (motor->encoder != NULL) {
-		Encoder_Init(motor->encoder, clock, htim);
-	}
-
-	else {
-		Error_Handler();
-	}
-
-	motor->controller = malloc(sizeof(struct PID_Controller));
-
-	if (motor->controller != NULL) {
-		PID_Init_Default(motor->controller, clock, motor->encoder);
-	}
-
-	else {
-		Error_Handler();
-	}
-}
-
-void Motor_Cleanup(struct Motor *motor) {
-	free(motor->controller);
-	free(motor->encoder);
-	free(motor);
+	Encoder_Init(&motor->encoder, clock, htim);
+	__PID_INIT_DEFAULT(&motor->controller, clock, &motor->encoder);
 }
 
 void setup() {
