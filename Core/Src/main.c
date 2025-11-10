@@ -22,6 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include <stdlib.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,8 +48,38 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
+TIM_HandleTypeDef htim8;
 
 /* USER CODE BEGIN PV */
+
+struct Encoder {
+	TIM_HandleTypeDef *htim;
+	TIM_HandleTypeDef *clock;
+
+	float speed;
+	long prevTime;
+	int prevCount;
+};
+
+struct PID_Controller {
+	float k_p;
+	float k_i;
+	float k_d;
+
+	float errorIntegral;
+	float prevError;
+	long prevTime;
+
+	struct Encoder *encoder;
+	TIM_HandleTypeDef *clock;
+};
+
+struct Motor {
+	struct Encoder *encoder;
+	struct PID_Controller *controller;
+	TIM_HandleTypeDef *clock;
+};
 
 /* USER CODE END PV */
 
@@ -59,7 +91,20 @@ static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM8_Init(void);
+static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
+
+void Encoder_Init(struct Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
+void PID_Init(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder,
+		float k_p, float k_i, float k_d);
+void PID_Init_Default(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder);
+void Motor_Init(struct Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
+
+void Motor_Cleanup(struct Motor *motor);
+
+void setup();
+void loop();
 
 /* USER CODE END PFP */
 
@@ -102,6 +147,8 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_I2C1_Init();
+  MX_TIM8_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -357,8 +404,9 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 0 */
 
-  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM4_Init 1 */
 
@@ -368,17 +416,17 @@ static void MX_TIM4_Init(void)
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
-  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
-  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -388,9 +436,125 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 71;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+
+}
+
+/**
+  * @brief TIM8 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM8_Init(void)
+{
+
+  /* USER CODE BEGIN TIM8_Init 0 */
+
+  /* USER CODE END TIM8_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM8_Init 1 */
+
+  /* USER CODE END TIM8_Init 1 */
+  htim8.Instance = TIM8;
+  htim8.Init.Prescaler = 0;
+  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim8.Init.Period = 65535;
+  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim8.Init.RepetitionCounter = 0;
+  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim8, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM8_Init 2 */
+
+  /* USER CODE END TIM8_Init 2 */
 
 }
 
@@ -420,6 +584,69 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+void Encoder_Init(struct Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim) {
+	encoder->htim = htim;
+	encoder->speed = 0;
+
+	encoder->prevCount = 0;
+	encoder->prevTime = __HAL_TIM_GET_COUNTER(clock);
+}
+
+void PID_Init(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder,
+		float k_p, float k_i, float k_d) {
+	controller->encoder = encoder;
+
+	controller->k_p = k_p;
+	controller->k_i = k_i;
+	controller->k_d = k_d;
+
+	controller->errorIntegral = 0;
+	controller->prevError = 0;
+	controller->prevTime = __HAL_TIM_GET_COUNTER(clock);
+}
+
+void PID_Init_Default(struct PID_Controller *controller, TIM_HandleTypeDef *clock, struct Encoder *encoder) {
+	PID_Init(controller, clock, encoder, 1.0, 0.3, 0.01);
+}
+
+void Motor_Init(struct Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim) {
+	motor->clock = clock;
+
+	motor->encoder = malloc(sizeof(struct Encoder));
+
+	if (motor->encoder != NULL) {
+		Encoder_Init(motor->encoder, clock, htim);
+	}
+
+	else {
+		Error_Handler();
+	}
+
+	motor->controller = malloc(sizeof(struct PID_Controller));
+
+	if (motor->controller != NULL) {
+		PID_Init_Default(motor->controller, clock, motor->encoder);
+	}
+
+	else {
+		Error_Handler();
+	}
+}
+
+void Motor_Cleanup(struct Motor *motor) {
+	free(motor->controller);
+	free(motor->encoder);
+	free(motor);
+}
+
+void setup() {
+	__HAL_TIM_SET_COUNTER(&htim5, 0);
+}
+
+void loop() {
+
+}
+
 /* USER CODE END 4 */
 
 /**
@@ -436,6 +663,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
+
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
