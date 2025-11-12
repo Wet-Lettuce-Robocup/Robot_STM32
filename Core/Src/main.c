@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include <stdlib.h>
 #include <stdbool.h>
 
 /* USER CODE END Includes */
@@ -58,7 +59,7 @@ typedef struct {
 
 	TIM_HandleTypeDef *pwmTimer;
 	uint8_t pwmChannel;
-	uint32_t dirGPIOPeripheral;
+	GPIO_TypeDef *dirGPIOPeripheral;
 	uint16_t dirGPIOPin;
 
 	int targetSpeed;
@@ -145,16 +146,20 @@ void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef 
 void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
 		float k_p, float k_i, float k_d);
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
-		uint8_t pwmChannel, uint32_t dirGPIOPeripheral, uint16_t dirGPIOPin);
+		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin);
 
 void Motor_Drive(Motor *motor, int speed);
 void Motor_Drive_PID(Motor *motor, int speed);
 void Motor_Stop(Motor *motor);
 
+void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
+void Robot_Stop(Robot *robot);
+
 void Encoder_Update(Encoder *encoder);
 int PID_Update(PID_Controller *controller, int error);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor);
+void Robot_Update(Robot *robot);
 
 uint8_t GetRxLengthForCommand(uint8_t cmd);
 uint8_t GetTxLengthForCommand(uint8_t cmd);
@@ -706,11 +711,17 @@ void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *enc
 	controller->prevTime = __HAL_TIM_GET_COUNTER(clock);
 }
 
-void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim) {
+void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
+		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin) {
 	motor->clock = clock;
 
 	Encoder_Init(&motor->encoder, clock, htim);
 	__PID_INIT_DEFAULT(&motor->controller, clock, &motor->encoder);
+
+	motor->pwmTimer = pwmTimer;
+	motor->pwmChannel = pwmChannel;
+	motor->dirGPIOPeripheral = dirGPIOPeripheral;
+	motor->dirGPIOPin = dirGPIOPin;
 
 	motor->targetSpeed = 0;
 	motor->pidActive = false;
@@ -804,6 +815,42 @@ void Motor_Update(Motor *motor) {
 	Motor_Drive(motor, pid);
 }
 
+void Robot_Update(Robot *robot) {
+	Motor_Update(&robot->frontLeftMotor);
+	Motor_Update(&robot->frontRightMotor);
+	Motor_Update(&robot->backLeftMotor);
+	Motor_Update(&robot->backRightMotor);
+}
+
+void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
+	int frontLeftSpeed = speed + strafe + turn;
+	int frontRightSpeed = speed - strafe - turn;
+	int backLeftSpeed = speed - strafe + turn;
+	int backRightSpeed = speed + strafe - turn;
+
+	Motor_Drive_PID(&robot->frontLeftMotor, frontLeftSpeed);
+	Motor_Drive_PID(&robot->frontRightMotor, frontRightSpeed);
+	Motor_Drive_PID(&robot->backLeftMotor, backLeftSpeed);
+	Motor_Drive_PID(&robot->backRightMotor, backRightSpeed);
+}
+
+void Robot_Stop(Robot *robot) {
+	Motor_Stop(&robot->frontLeftMotor);
+	Motor_Stop(&robot->frontRightMotor);
+	Motor_Stop(&robot->backLeftMotor);
+	Motor_Stop(&robot->backRightMotor);
+}
+
+void setupRobot(Robot *robot) {
+	TIM_HandleTypeDef *clock = &htim5;
+	TIM_HandleTypeDef *pwmTim = &htim1;
+
+	Motor_Init(&robot->frontLeftMotor, clock, &htim2, pwmTim, 1, GPIOD, GPIO_PIN_8);
+	Motor_Init(&robot->frontRightMotor, clock, &htim3, pwmTim, 2, GPIOD, GPIO_PIN_9);
+	Motor_Init(&robot->backLeftMotor, clock, &htim4, pwmTim, 3, GPIOD, GPIO_PIN_10);
+	Motor_Init(&robot->backRightMotor, clock, &htim8, pwmTim, 4, GPIOD, GPIO_PIN_11);
+}
+
 // i2c
 
 uint8_t IsReadCommand(uint8_t cmd) {
@@ -813,7 +860,7 @@ uint8_t IsReadCommand(uint8_t cmd) {
 uint8_t GetRxLengthForCommand(uint8_t cmd) {
     switch(cmd) {
         case CMD_DRIVE:
-            return 3;
+            return 12;
         case CMD_STOP:
             return 0;
         default:
@@ -837,15 +884,16 @@ uint8_t GetTxLengthForCommand(uint8_t cmd) {
 void setup() {
 	__HAL_TIM_SET_COUNTER(&htim5, 0);
 	HAL_I2C_EnableListen_IT(&hi2c1);
+	setupRobot(&robot);
 }
 
 void loop() {
 	if (data_received) {
 	    data_received = 0;
-		ProcessReceivedData(command_byte, (uint8_t*)data_buffer, data_length);
+		ProcessReceivedData(command_byte, (uint8_t*)rx_buffer, rx_length);
 	}
 
-
+	Robot_Update(&robot);
 }
 
 /* USER CODE END 4 */
