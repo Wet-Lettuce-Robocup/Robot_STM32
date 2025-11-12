@@ -164,6 +164,7 @@ void Robot_Update(Robot *robot);
 uint8_t GetRxLengthForCommand(uint8_t cmd);
 uint8_t GetTxLengthForCommand(uint8_t cmd);
 uint8_t IsReadCommand(uint8_t cmd);
+void InsertIntoBuffer(int data, uint8_t *buffer);
 void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len);
 void PrepareResponseData(uint8_t cmd);
 
@@ -862,7 +863,7 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         case CMD_DRIVE:
             return 12;
         case CMD_STOP:
-            return 0;
+            return 1;
         default:
             return 0;  // Read commands or unknown
     }
@@ -879,6 +880,137 @@ uint8_t GetTxLengthForCommand(uint8_t cmd) {
         default:
             return 0;  // Write commands or unknown
     }
+}
+
+void InsertIntoBuffer(int data, uint8_t *buffer) {
+	buffer[0] = data >> 24 & 0xFF;
+	buffer[1] = data >> 16 & 0xFF;
+	buffer[2] = data >> 8 & 0xFF;
+	buffer[3] = data & 0xFF;
+}
+
+int intFromBuffer(uint8_t *buffer) {
+	int result = 0;
+
+	result |= buffer[0] << 24;
+	result |= buffer[1] << 16;
+	result |= buffer[2] << 8;
+	result |= buffer[3];
+
+	return result;
+}
+
+void PrepareResponseData(uint8_t cmd) {
+    tx_length = GetTxLengthForCommand(cmd);
+
+    switch(cmd) {
+        case CMD_READ_STATUS:
+            tx_buffer[0] = 1;
+            break;
+
+        case CMD_READ_VEL:
+            InsertIntoBuffer(robot.frontLeftMotor.encoder.speed, (uint8_t *)tx_buffer);
+            InsertIntoBuffer(robot.frontRightMotor.encoder.speed, (uint8_t *)tx_buffer + 4);
+            InsertIntoBuffer(robot.backLeftMotor.encoder.speed, (uint8_t *)tx_buffer + 8);
+            InsertIntoBuffer(robot.backRightMotor.encoder.speed, (uint8_t *)tx_buffer + 12);
+            break;
+
+        case CMD_READ_ENC:
+        	InsertIntoBuffer(__HAL_TIM_GET_COUNTER(robot.frontLeftMotor.encoder.htim), (uint8_t *)tx_buffer);
+        	InsertIntoBuffer(__HAL_TIM_GET_COUNTER(robot.frontRightMotor.encoder.htim), (uint8_t *)tx_buffer + 4);
+        	InsertIntoBuffer(__HAL_TIM_GET_COUNTER(robot.backLeftMotor.encoder.htim), (uint8_t *)tx_buffer + 8);
+        	InsertIntoBuffer(__HAL_TIM_GET_COUNTER(robot.backRightMotor.encoder.htim), (uint8_t *)tx_buffer + 12);
+            break;
+
+        default:
+            tx_length = 0;
+            break;
+    }
+}
+
+void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
+    switch(cmd) {
+        case CMD_DRIVE:
+            int speed = intFromBuffer(data);
+            int strafe = intFromBuffer(data + 4);
+            int turn = intFromBuffer(data + 8);
+
+            Robot_Drive(&robot, speed, strafe, turn);
+            break;
+
+        case CMD_STOP:
+        	Robot_Stop(&robot);
+            break;
+
+        default:
+            break;
+    }
+}
+
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode) {
+    if (TransferDirection == I2C_DIRECTION_TRANSMIT) {
+        i2c_state = STATE_WAIT_COMMAND;
+        HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)&command_byte, 1, I2C_FIRST_FRAME);
+    }
+
+    else {
+        i2c_state = STATE_SEND_RESPONSE;
+
+        PrepareResponseData(command_byte);
+
+        if (tx_length > 0) {
+            HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)tx_buffer, tx_length, I2C_LAST_FRAME);
+        } else {
+            i2c_state = STATE_IDLE;
+            HAL_I2C_EnableListen_IT(hi2c);
+        }
+    }
+}
+
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+    if (i2c_state == STATE_WAIT_COMMAND) {
+        // Command byte received
+
+        if (IsReadCommand(command_byte)) {
+            i2c_state = STATE_IDLE;
+            HAL_I2C_EnableListen_IT(hi2c);
+        }
+        else {
+            rx_length = GetRxLengthForCommand(command_byte);
+
+            if (rx_length > 0) {
+                i2c_state = STATE_WAIT_DATA;
+                HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)rx_buffer, rx_length, I2C_LAST_FRAME);
+            } else {
+                i2c_state = STATE_IDLE;
+                data_received = 1;
+                HAL_I2C_EnableListen_IT(hi2c);
+            }
+        }
+    }
+    else if (i2c_state == STATE_WAIT_DATA) {
+        i2c_state = STATE_IDLE;
+        data_received = 1;
+        HAL_I2C_EnableListen_IT(hi2c);
+    }
+}
+
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
+    // Data transmission to master complete
+    i2c_state = STATE_IDLE;
+    HAL_I2C_EnableListen_IT(hi2c);
+}
+
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
+    // Re-enable listening for next transaction
+    HAL_I2C_EnableListen_IT(hi2c);
+}
+
+// I2C Error Callback
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
+    // Handle error - reset state and re-enable listening
+    i2c_state = STATE_IDLE;
+    HAL_I2C_EnableListen_IT(hi2c);
 }
 
 void setup() {
