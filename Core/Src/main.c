@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2025 STMicroelectronics.
+  * Copyright (c) 2025 Wet Lettuce.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -1026,6 +1026,7 @@ void loop() {
 	}
 
 	Robot_Update(&robot);
+	HAL_Delay(5);
 }
 
 /* USER CODE END 4 */
