@@ -62,9 +62,18 @@ typedef struct {
 	GPIO_TypeDef *dirGPIOPeripheral;
 	uint16_t dirGPIOPin;
 
+	GPIO_TypeDef *faultPeripheral;
+	uint16_t faultPin;
+
 	int targetSpeed;
 	bool pidActive;
 } Motor;
+
+typedef enum {
+	STATE_STOPPED,
+	STATE_DRIVING,
+	STATE_FAULT
+} Robot_State;
 
 typedef struct {
 	Motor frontLeftMotor;
@@ -74,6 +83,8 @@ typedef struct {
 
 	GPIO_TypeDef *regEnablePeripheral;
 	uint16_t regEnablePin;
+
+	Robot_State state;
 } Robot;
 
 typedef enum {
@@ -151,11 +162,13 @@ void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef 
 void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
 		float k_p, float k_i, float k_d);
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
-		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin);
+		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin);
 
 void Motor_Drive(Motor *motor, int speed);
 void Motor_Drive_PID(Motor *motor, int speed);
 void Motor_Stop(Motor *motor);
+bool Motor_Check_Fault(Motor *motor);
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_Stop(Robot *robot);
@@ -805,20 +818,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6|GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11
-                          |GPIO_PIN_14|GPIO_PIN_7, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : PE6 PE8 PE12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12;
+  /*Configure GPIO pins : PE6 PE8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -833,18 +842,27 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PD8 PD9 PD10 PD11
-                           PD14 PD7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11
-                          |GPIO_PIN_14|GPIO_PIN_7;
+  /*Configure GPIO pin : PE12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PD8 PD9 PD10 PD11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PD14 PD7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -876,7 +894,8 @@ void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *enc
 }
 
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
-		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin) {
+		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin) {
 	motor->clock = clock;
 
 	Encoder_Init(&motor->encoder, clock, htim);
@@ -886,6 +905,9 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 	motor->pwmChannel = pwmChannel;
 	motor->dirGPIOPeripheral = dirGPIOPeripheral;
 	motor->dirGPIOPin = dirGPIOPin;
+
+	motor->faultPeripheral = faultPeripheral;
+	motor->faultPin = faultPin;
 
 	motor->targetSpeed = 0;
 	motor->pidActive = false;
@@ -966,6 +988,10 @@ void Motor_Stop(Motor *motor) {
 	motor->pidActive = false;
 }
 
+bool Motor_Check_fault(Motor *motor) {
+	return HAL_GPIO_ReadPin(motor->faultPeripheral, motor->faultPin) == GPIO_PIN_RESET;
+}
+
 void Motor_Update(Motor *motor) {
 	if (!motor->pidActive) {
 		return;
@@ -980,6 +1006,21 @@ void Motor_Update(Motor *motor) {
 }
 
 void Robot_Update(Robot *robot) {
+	bool fault = 0;
+
+	fault |= Motor_Check_Fault(&robot->frontLeftMotor);
+	fault |= Motor_Check_Fault(&robot->frontRightMotor);
+	fault |= Motor_Check_Fault(&robot->backLeftMotor);
+	fault |= Motor_Check_Fault(&robot->backRightMotor);
+
+	if (fault) {
+		Robot_Stop(robot);
+
+		robot->state = STATE_FAULT;
+
+		return;
+	}
+
 	Motor_Update(&robot->frontLeftMotor);
 	Motor_Update(&robot->frontRightMotor);
 	Motor_Update(&robot->backLeftMotor);
@@ -987,7 +1028,7 @@ void Robot_Update(Robot *robot) {
 }
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
-	HAL_GPIO_WritePin(&robot->regEnablePeripheral, &robot->regEnablePin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
 	int frontLeftSpeed = speed + strafe + turn;
 	int frontRightSpeed = speed - strafe - turn;
@@ -998,6 +1039,8 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
 	Motor_Drive_PID(&robot->frontRightMotor, frontRightSpeed);
 	Motor_Drive_PID(&robot->backLeftMotor, backLeftSpeed);
 	Motor_Drive_PID(&robot->backRightMotor, backRightSpeed);
+
+	robot->state = STATE_DRIVING;
 }
 
 void Robot_Stop(Robot *robot) {
@@ -1006,7 +1049,8 @@ void Robot_Stop(Robot *robot) {
 	Motor_Stop(&robot->backLeftMotor);
 	Motor_Stop(&robot->backRightMotor);
 
-	HAL_GPIO_WritePin(&robot->regEnablePeripheral, &robot->regEnablePin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_RESET);
+	robot->state = STATE_STOPPED;
 }
 
 void setupRobot(Robot *robot) {
@@ -1014,10 +1058,12 @@ void setupRobot(Robot *robot) {
 	robot->regEnablePeripheral = GPIOC;
 	robot->regEnablePin = GPIO_PIN_5;
 
-	Motor_Init(&robot->frontLeftMotor, clock, &htim1, &htim5, 1, GPIOD, GPIO_PIN_8);
-	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, 2, GPIOD, GPIO_PIN_9);
-	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, 3, GPIOD, GPIO_PIN_10);
-	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, 4, GPIOD, GPIO_PIN_11);
+	robot->state = STATE_STOPPED;
+
+	Motor_Init(&robot->frontLeftMotor, clock, &htim1, &htim5, 1, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0);
+	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, 2, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7);
+	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, 3, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12);
+	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, 4, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14);
 }
 
 // i2c
@@ -1073,7 +1119,7 @@ void PrepareResponseData(uint8_t cmd) {
 
     switch(cmd) {
         case CMD_READ_STATUS:
-            tx_buffer[0] = 1;
+            tx_buffer[0] = robot.state;
             break;
 
         case CMD_READ_VEL:
