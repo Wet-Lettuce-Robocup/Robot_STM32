@@ -23,102 +23,21 @@
 /* USER CODE BEGIN Includes */
 
 #include <stdlib.h>
-#include <stdbool.h>
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-typedef struct {
-	TIM_HandleTypeDef *htim;
-	TIM_HandleTypeDef *clock;
-
-	int speed;
-	uint32_t prevTime;
-	int prevCount;
-} Encoder;
-
-typedef struct {
-	float k_p;
-	float k_i;
-	float k_d;
-
-	float errorIntegral;
-	float prevError;
-	uint32_t prevTime;
-
-	Encoder *encoder;
-	TIM_HandleTypeDef *clock;
-} PID_Controller;
-
-typedef struct {
-	Encoder encoder;
-	PID_Controller controller;
-	TIM_HandleTypeDef *clock;
-
-	TIM_HandleTypeDef *pwmTimer;
-	uint8_t pwmChannel;
-	GPIO_TypeDef *dirGPIOPeripheral;
-	uint16_t dirGPIOPin;
-
-	GPIO_TypeDef *faultPeripheral;
-	uint16_t faultPin;
-
-	int targetSpeed;
-	bool pidActive;
-} Motor;
-
-typedef struct {
-	TIM_HandleTypeDef *pwmTimer;
-	uint8_t pwmChannel;
-} Servo;
-
-typedef enum {
-	STATE_STOPPED,
-	STATE_DRIVING,
-	STATE_FAULT
-} Robot_State;
-
-typedef struct {
-	Motor frontLeftMotor;
-	Motor frontRightMotor;
-	Motor backLeftMotor;
-	Motor backRightMotor;
-
-	GPIO_TypeDef *regEnablePeripheral;
-	uint16_t regEnablePin;
-
-	Robot_State state;
-} Robot;
-
-typedef enum {
-    STATE_IDLE,
-    STATE_WAIT_COMMAND,
-    STATE_WAIT_DATA,
-    STATE_SEND_RESPONSE
-} I2C_State_t;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define CMD_DRIVE       0x01  // Read 3 bytes
-#define CMD_STOP        0x02  // Read 0 bytes
-#define CMD_SET_SERVO   0x03  // Read 2 bytes
-
-#define CMD_READ_STATUS 0x80
-#define CMD_READ_VEL    0x81
-#define CMD_READ_ENC    0x82
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
-#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 1.0, 0.3, 0.01)
-#define SERVO_COUNT 3
 
 /* USER CODE END PM */
 
@@ -165,30 +84,6 @@ static void MX_TIM9_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-
-void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
-void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
-		float k_p, float k_i, float k_d);
-void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
-		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
-		GPIO_TypeDef *faultPeripheral, uint16_t faultPin);
-void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
-
-void Motor_Drive(Motor *motor, int speed);
-void Motor_Drive_PID(Motor *motor, int speed);
-void Motor_Stop(Motor *motor);
-bool Motor_Check_Fault(Motor *motor);
-
-void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
-void Robot_Stop(Robot *robot);
-
-void Servo_Set_Angle(Servo *servo, int angle);
-
-void Encoder_Update(Encoder *encoder);
-int PID_Update(PID_Controller *controller, int error);
-void PID_Reset(PID_Controller *controller);
-void Motor_Update(Motor *motor);
-void Robot_Update(Robot *robot);
 
 uint8_t GetRxLengthForCommand(uint8_t cmd);
 uint8_t GetTxLengthForCommand(uint8_t cmd);
@@ -255,6 +150,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  loop();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -942,11 +838,15 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 
 	motor->targetSpeed = 0;
 	motor->pidActive = false;
+
+	HAL_TIM_PWM_Start(pwmTimer, pwmChannel);
 }
 
 void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel) {
 	servo->pwmTimer = pwmTimer;
 	servo->pwmChannel = pwmChannel;
+
+	HAL_TIM_PWM_Start(pwmTimer, pwmChannel);
 }
 
 void Encoder_Update(Encoder *encoder) {
@@ -1006,7 +906,7 @@ void Motor_Drive(Motor *motor, int speed) {
 	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, absSpeed);
 }
 
-void Motor_Drive_PID(Motor *motor, int speed) {
+void Motor_DrivePID(Motor *motor, int speed) {
 	if (!motor->pidActive || abs(speed - motor->targetSpeed) > 250) {
 		PID_Reset(&motor->controller);
 	}
@@ -1024,7 +924,7 @@ void Motor_Stop(Motor *motor) {
 	motor->pidActive = false;
 }
 
-bool Motor_Check_fault(Motor *motor) {
+bool Motor_CheckFault(Motor *motor) {
 	return HAL_GPIO_ReadPin(motor->faultPeripheral, motor->faultPin) == GPIO_PIN_RESET;
 }
 
@@ -1044,10 +944,10 @@ void Motor_Update(Motor *motor) {
 void Robot_Update(Robot *robot) {
 	bool fault = 0;
 
-	fault |= Motor_Check_Fault(&robot->frontLeftMotor);
-	fault |= Motor_Check_Fault(&robot->frontRightMotor);
-	fault |= Motor_Check_Fault(&robot->backLeftMotor);
-	fault |= Motor_Check_Fault(&robot->backRightMotor);
+	fault |= Motor_CheckFault(&robot->frontLeftMotor);
+	fault |= Motor_CheckFault(&robot->frontRightMotor);
+	fault |= Motor_CheckFault(&robot->backLeftMotor);
+	fault |= Motor_CheckFault(&robot->backRightMotor);
 
 	if (fault) {
 		Robot_Stop(robot);
@@ -1071,10 +971,10 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
 	int backLeftSpeed = speed - strafe + turn;
 	int backRightSpeed = speed + strafe - turn;
 
-	Motor_Drive_PID(&robot->frontLeftMotor, frontLeftSpeed);
-	Motor_Drive_PID(&robot->frontRightMotor, frontRightSpeed);
-	Motor_Drive_PID(&robot->backLeftMotor, backLeftSpeed);
-	Motor_Drive_PID(&robot->backRightMotor, backRightSpeed);
+	Motor_DrivePID(&robot->frontLeftMotor, frontLeftSpeed);
+	Motor_DrivePID(&robot->frontRightMotor, frontRightSpeed);
+	Motor_DrivePID(&robot->backLeftMotor, backLeftSpeed);
+	Motor_DrivePID(&robot->backRightMotor, backRightSpeed);
 
 	robot->state = STATE_DRIVING;
 }
@@ -1089,7 +989,7 @@ void Robot_Stop(Robot *robot) {
 	robot->state = STATE_STOPPED;
 }
 
-void Servo_Set_Angle(Servo *servo, int angle) {
+void Servo_SetAngle(Servo *servo, int angle) {
 	angle = angle < 0 ? 0 : angle > 180 ? 180 : angle;
 	int period = __HAL_TIM_GET_AUTORELOAD(servo->pwmTimer) + 1; // 50Hz / 20ms period
 
@@ -1109,16 +1009,16 @@ void setupRobot(Robot *robot) {
 
 	robot->state = STATE_STOPPED;
 
-	Motor_Init(&robot->frontLeftMotor, clock, &htim1, &htim5, 1, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0);
-	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, 2, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7);
-	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, 3, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12);
-	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, 4, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0);
+	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7);
+	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12);
+	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14);
 }
 
 void setupServos(Servo *servos) {
-	Servo_Init(servos, &htim8, 1);
-	Servo_Init(servos + 1, &htim8, 1);
-	Servo_Init(servos + 2, &htim8, 1);
+	Servo_Init(servos, &htim8, TIM_CHANNEL_1);
+	Servo_Init(servos + 1, &htim8, TIM_CHANNEL_2);
+	Servo_Init(servos + 2, &htim8, TIM_CHANNEL_3);
 }
 
 // i2c
@@ -1132,7 +1032,9 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         case CMD_DRIVE:
             return 12;
         case CMD_STOP:
-            return 1;
+            return 0;
+        case CMD_SET_SERVO:
+        	return 2;
         default:
             return 0;  // Read commands or unknown
     }
@@ -1210,6 +1112,13 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
         case CMD_STOP:
         	Robot_Stop(&robot);
             break;
+
+        case CMD_SET_SERVO:
+        	int servoNum = data[0];
+        	Servo *servo = servos + servoNum;
+        	int angle = data[1];
+
+        	Servo_SetAngle(servo, angle);
 
         default:
             break;
@@ -1297,6 +1206,7 @@ void loop() {
 	}
 
 	Robot_Update(&robot);
+
 	HAL_Delay(5);
 }
 
