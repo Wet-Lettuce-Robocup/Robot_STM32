@@ -69,6 +69,11 @@ typedef struct {
 	bool pidActive;
 } Motor;
 
+typedef struct {
+	TIM_HandleTypeDef *pwmTimer;
+	uint8_t pwmChannel;
+} Servo;
+
 typedef enum {
 	STATE_STOPPED,
 	STATE_DRIVING,
@@ -101,6 +106,7 @@ typedef enum {
 
 #define CMD_DRIVE       0x01  // Read 3 bytes
 #define CMD_STOP        0x02  // Read 0 bytes
+#define CMD_SET_SERVO   0x03  // Read 2 bytes
 
 #define CMD_READ_STATUS 0x80
 #define CMD_READ_VEL    0x81
@@ -112,6 +118,7 @@ typedef enum {
 /* USER CODE BEGIN PM */
 
 #define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 1.0, 0.3, 0.01)
+#define SERVO_COUNT 3
 
 /* USER CODE END PM */
 
@@ -140,6 +147,7 @@ volatile uint8_t tx_length = 0;
 volatile uint8_t data_received = 0;
 
 Robot robot;
+Servo servos[SERVO_COUNT];
 
 /* USER CODE END PV */
 
@@ -164,6 +172,7 @@ void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *enc
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
 		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
 		GPIO_TypeDef *faultPeripheral, uint16_t faultPin);
+void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
 
 void Motor_Drive(Motor *motor, int speed);
 void Motor_Drive_PID(Motor *motor, int speed);
@@ -172,6 +181,8 @@ bool Motor_Check_Fault(Motor *motor);
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_Stop(Robot *robot);
+
+void Servo_Set_Angle(Servo *servo, int angle);
 
 void Encoder_Update(Encoder *encoder);
 int PID_Update(PID_Controller *controller, int error);
@@ -592,6 +603,7 @@ static void MX_TIM5_Init(void)
 
   /* USER CODE END TIM5_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
@@ -604,6 +616,15 @@ static void MX_TIM5_Init(void)
   htim5.Init.Period = 4294967295;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim5) != HAL_OK)
   {
     Error_Handler();
@@ -691,6 +712,7 @@ static void MX_TIM8_Init(void)
 
   /* USER CODE END TIM8_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
   TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
@@ -699,12 +721,21 @@ static void MX_TIM8_Init(void)
 
   /* USER CODE END TIM8_Init 1 */
   htim8.Instance = TIM8;
-  htim8.Init.Prescaler = 0;
+  htim8.Init.Prescaler = 1439;
   htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim8.Init.Period = 65535;
+  htim8.Init.Period = 999;
   htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim8.Init.RepetitionCounter = 0;
   htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim8, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim8) != HAL_OK)
   {
     Error_Handler();
@@ -913,6 +944,11 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 	motor->pidActive = false;
 }
 
+void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel) {
+	servo->pwmTimer = pwmTimer;
+	servo->pwmChannel = pwmChannel;
+}
+
 void Encoder_Update(Encoder *encoder) {
 	uint32_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
 	uint32_t d_t = encoder->prevTime - currentTime;
@@ -1053,6 +1089,19 @@ void Robot_Stop(Robot *robot) {
 	robot->state = STATE_STOPPED;
 }
 
+void Servo_Set_Angle(Servo *servo, int angle) {
+	angle = angle < 0 ? 0 : angle > 180 ? 180 : angle;
+	int period = __HAL_TIM_GET_AUTORELOAD(servo->pwmTimer) + 1; // 50Hz / 20ms period
+
+	float percent_rotation = (float)angle / 180;
+
+	int counts_per_ms = 0.05 * period;
+
+	int duty_cycle = counts_per_ms * (percent_rotation + 1);
+
+	__HAL_TIM_SET_COMPARE(servo->pwmTimer, servo->pwmChannel, duty_cycle);
+}
+
 void setupRobot(Robot *robot) {
 	TIM_HandleTypeDef *clock = &htim6;
 	robot->regEnablePeripheral = GPIOC;
@@ -1064,6 +1113,12 @@ void setupRobot(Robot *robot) {
 	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, 2, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7);
 	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, 3, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12);
 	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, 4, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14);
+}
+
+void setupServos(Servo *servos) {
+	Servo_Init(servos, &htim8, 1);
+	Servo_Init(servos + 1, &htim8, 1);
+	Servo_Init(servos + 2, &htim8, 1);
 }
 
 // i2c
@@ -1232,6 +1287,7 @@ void setup() {
 	__HAL_TIM_SET_COUNTER(&htim6, 0);
 	HAL_I2C_EnableListen_IT(&hi2c1);
 	setupRobot(&robot);
+	setupServos(servos);
 }
 
 void loop() {
