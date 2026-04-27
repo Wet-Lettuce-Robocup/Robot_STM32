@@ -83,6 +83,20 @@ typedef struct {
 	uint8_t pwmChannel;
 } Servo;
 
+typedef struct {
+	GPIO_TypeDef *trigPeripheral;
+	uint16_t trigPin;
+	TIM_HandleTypeDef *echoTimer;
+	uint8_t echoChannel;
+
+	double currentDistance; // mm
+	bool isFirstCaptured;
+	uint32_t icVal1;
+	uint32_t icVal2;
+	uint32_t lastUsed;
+	uint32_t delayTime;
+} UltraS;
+
 typedef enum {
 	STATE_STOPPED,
 	STATE_DRIVING,
@@ -122,8 +136,6 @@ typedef enum {
 
 /* USER CODE END EM */
 
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -136,6 +148,8 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
 		GPIO_TypeDef *faultPeripheral, uint16_t faultPin);
 void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
+void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigPin,
+		TIM_HandleTypeDef *echoTimer, uint8_t echoChannel, uint32_t delayTime);
 
 void Motor_Drive(Motor *motor, int speed);
 void Motor_DrivePID(Motor *motor, int speed);
@@ -146,6 +160,8 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_Stop(Robot *robot);
 
 void Servo_SetAngle(Servo *servo, int angle);
+
+void UltraS_SendPulse(UltraS *ultrasonic);
 
 void Encoder_Update(Encoder *encoder);
 int PID_Update(PID_Controller *controller, int error);
@@ -166,6 +182,7 @@ void Robot_Update(Robot *robot);
 #define CMD_READ_STATUS 0x80
 #define CMD_READ_VEL    0x81
 #define CMD_READ_ENC    0x82
+#define CMD_READ_ULTRAS 0x83
 
 #define SERVO_COUNT 3
 
