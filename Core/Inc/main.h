@@ -110,6 +110,8 @@ typedef struct {
 	uint32_t icVal2;
 	uint32_t lastUsed;
 	uint32_t delayTime;
+
+	bool enabled;
 } UltraS;
 
 typedef enum {
@@ -184,6 +186,7 @@ int PID_Update(PID_Controller *controller, int error);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor);
 void Robot_Update(Robot *robot);
+void UltraS_Update(UltraS *ultrasonic);
 
 float Read_Internal_Temp();
 
@@ -198,6 +201,8 @@ float Read_Internal_Temp();
 #define CMD_SET_SERVO   0x10  // Read 2 bytes
 #define CMD_DRIVE_SERVO 0x11  // Read 2 bytes
 							  // Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
+#define CMD_EN_ULTRAS   0x12  // Read 0 bytes
+#define CMD_STOP_ULTRAS 0x13  // Read 0 bytes
 
 #define CMD_READ_STATUS 0x80
 #define CMD_READ_VEL    0x81

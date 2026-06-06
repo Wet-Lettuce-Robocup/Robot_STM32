@@ -269,6 +269,8 @@ void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigP
 
 	ultrasonic->currentDistance = -1;
 	ultrasonic->isFirstCaptured = false;
+
+	ultrasonic->enabled = false;
 }
 
 // ==========================================
@@ -358,6 +360,18 @@ void Robot_Update(Robot *robot) {
 	Motor_Update(&robot->frontRightMotor);
 	Motor_Update(&robot->backLeftMotor);
 	Motor_Update(&robot->backRightMotor);
+}
+
+void UltraS_Update(UltraS *ultrasonic) {
+	if (!ultrasonic->enabled) {
+		return;
+	}
+
+	uint32_t currentTime = HAL_GetTick();
+
+	if (currentTime > ultrasonic->lastUsed + ultrasonic->delayTime) {
+		UltraS_SendPulse(ultrasonic);
+	}
 }
 
 // ==========================================
@@ -563,6 +577,10 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         	return 2;
         case CMD_DRIVE_SERVO:
         	return 2;
+        case CMD_EN_ULTRAS:
+        	return 0;
+        case CMD_STOP_ULTRAS:
+        	return 0;
         default:
             return 0;  // Read commands or unknown
     }
@@ -671,6 +689,12 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
         	Servo_Drive(servo, dir);
         	break;
         }
+        case CMD_EN_ULTRAS:
+        	ultrasonic.enabled = true;
+        	break;
+        case CMD_STOP_ULTRAS:
+        	ultrasonic.enabled = true;
+        	break;
         default:
             break;
     }
@@ -785,8 +809,6 @@ void setup() {
 	HAL_TIM_IC_Start_IT(&htim9, TIM_CHANNEL_1);
 }
 
-// double x = 0;
-
 void loop() {
 	if (data_received) {
 		data_received = 0;
@@ -795,17 +817,7 @@ void loop() {
 
 	// Robot_Drive(&robot, 2000, 0, 0);
 	Robot_Update(&robot);
-
-	// int angle = (int)x % 2 * 180;
-	// Servo_SetAngle(&servos[1], angle);
-
-	// uint32_t currentTime = HAL_GetTick();
-
-	// if (currentTime > ultrasonic.lastUsed + ultrasonic.delayTime) {
-	// 	UltraS_SendPulse(&ultrasonic);
-	// }
-
-	// x += 0.1;
+	UltraS_Update(&ultrasonic);
 
 	HAL_Delay(50);
 }
