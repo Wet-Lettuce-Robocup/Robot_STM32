@@ -44,18 +44,27 @@ typedef struct {
 	TIM_HandleTypeDef *clock;
 
 	int speed;
-	uint32_t prevTime;
+	uint16_t prevTime;
 	int prevCount;
+
+	bool invert;
+	float alpha;
+
+	uint16_t dt;
+	int dc;
 } Encoder;
 
 typedef struct {
-	float k_p;
-	float k_i;
-	float k_d;
+	double k_p;
+	double k_i;
+	double k_d;
+	double maxIntegral;
 
-	float errorIntegral;
-	float prevError;
-	uint32_t prevTime;
+	double errorIntegral;
+	double prevError;
+	uint16_t prevTime;
+
+	double d_t;
 
 	Encoder *encoder;
 	TIM_HandleTypeDef *clock;
@@ -73,6 +82,12 @@ typedef struct {
 
 	GPIO_TypeDef *faultPeripheral;
 	uint16_t faultPin;
+
+	bool invert;
+
+	uint16_t speed;
+	bool reversed;
+	int maxPWM;
 
 	int targetSpeed;
 	bool pidActive;
@@ -132,7 +147,7 @@ typedef enum {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 1.0, 0.3, 0.01)
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.0, 0.1, 0.0, 8000)
 
 /* USER CODE END EM */
 
@@ -141,12 +156,12 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim);
+void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, bool invert, float alpha);
 void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
-		float k_p, float k_i, float k_d);
+		double k_p, double k_i, double k_d, double maxIntegral);
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
 		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
-		GPIO_TypeDef *faultPeripheral, uint16_t faultPin);
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin, bool invert, bool invertEncoder, float alpha);
 void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
 void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigPin,
 		TIM_HandleTypeDef *echoTimer, uint8_t echoChannel, uint32_t delayTime);
@@ -160,6 +175,7 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_Stop(Robot *robot);
 
 void Servo_SetAngle(Servo *servo, int angle);
+void Servo_Drive(Servo *servo, int8_t dir);
 
 void UltraS_SendPulse(UltraS *ultrasonic);
 
@@ -168,6 +184,8 @@ int PID_Update(PID_Controller *controller, int error);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor);
 void Robot_Update(Robot *robot);
+
+float Read_Internal_Temp();
 
 /* USER CODE END EFP */
 
@@ -178,13 +196,16 @@ void Robot_Update(Robot *robot);
 #define CMD_DRIVE       0x01  // Read 12 bytes
 #define CMD_STOP        0x02  // Read 0 bytes
 #define CMD_SET_SERVO   0x10  // Read 2 bytes
+#define CMD_DRIVE_SERVO 0x11  // Read 2 bytes
+							  // Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
 
 #define CMD_READ_STATUS 0x80
 #define CMD_READ_VEL    0x81
 #define CMD_READ_ENC    0x82
 #define CMD_READ_ULTRAS 0x83
+#define CMD_READ_TEMP   0x84
 
-#define SERVO_COUNT 3
+#define SERVO_COUNT 	3
 
 /* USER CODE END Private defines */
 

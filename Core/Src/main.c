@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 
 #include <stdlib.h>
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -189,21 +190,34 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim) {
+// ==========================================
+// Initialization
+// ==========================================
+
+
+void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, bool invert, float alpha) {
+	encoder->clock = clock;
 	encoder->htim = htim;
 	encoder->speed = 0;
 
 	encoder->prevCount = 0;
 	encoder->prevTime = __HAL_TIM_GET_COUNTER(clock);
+
+	encoder->invert = invert;
+	encoder->alpha = alpha;
+
+	HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL);
 }
 
 void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
-		float k_p, float k_i, float k_d) {
+		double k_p, double k_i, double k_d, double maxIntegral) {
+	controller->clock = clock;
 	controller->encoder = encoder;
 
 	controller->k_p = k_p;
 	controller->k_i = k_i;
 	controller->k_d = k_d;
+	controller->maxIntegral = maxIntegral;
 
 	controller->errorIntegral = 0;
 	controller->prevError = 0;
@@ -212,10 +226,10 @@ void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *enc
 
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
 		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
-		GPIO_TypeDef *faultPeripheral, uint16_t faultPin) {
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin, bool invert, bool invertEncoder, float alpha) {
 	motor->clock = clock;
 
-	Encoder_Init(&motor->encoder, clock, htim);
+	Encoder_Init(&motor->encoder, clock, htim, invertEncoder, alpha);
 	__PID_INIT_DEFAULT(&motor->controller, clock, &motor->encoder);
 
 	motor->pwmTimer = pwmTimer;
@@ -226,8 +240,11 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 	motor->faultPeripheral = faultPeripheral;
 	motor->faultPin = faultPin;
 
+	motor->invert = invert;
+
 	motor->targetSpeed = 0;
 	motor->pidActive = false;
+	motor->maxPWM = 1000;
 
 	HAL_TIM_PWM_Start(pwmTimer, pwmChannel);
 }
@@ -250,95 +267,68 @@ void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigP
 	ultrasonic->lastUsed = HAL_GetTick();
 	ultrasonic->delayTime = delayTime;
 
-	ultrasonic->currentDistance = 0;
+	ultrasonic->currentDistance = -1;
 	ultrasonic->isFirstCaptured = false;
 }
 
+// ==========================================
+// Updating
+// ==========================================
+
 void Encoder_Update(Encoder *encoder) {
-	uint32_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
-	uint32_t d_t = encoder->prevTime - currentTime;
+	uint16_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
+	uint16_t d_t = currentTime - encoder->prevTime;
 
-	int currentCount = __HAL_TIM_GET_COUNTER(encoder->htim);
-	int d_c = encoder->prevCount - currentCount;
+	int16_t currentCount = __HAL_TIM_GET_COUNTER(encoder->htim);
+	int d_c = currentCount - encoder->prevCount;
 
-	encoder->speed = d_c * 1000000 / d_t;
+	if (encoder->invert) d_c = -d_c;
+
+	encoder->dt = d_t;
+	encoder->dc = d_c;
+
+	double raw_speed = d_c * 1000000 / d_t;
+
+	encoder->speed = (encoder->alpha * raw_speed) + ((1.0f - encoder->alpha) * encoder->speed);
 	encoder->prevTime = currentTime;
 	encoder->prevCount = currentCount;
 }
 
 int PID_Update(PID_Controller *controller, int error) {
-	uint32_t currentTime = __HAL_TIM_GET_COUNTER(controller->clock);
-	float d_t = (float)(controller->prevTime - currentTime) / 1.0e6;
+	uint16_t currentTime = __HAL_TIM_GET_COUNTER(controller->clock);
+	double d_t = (double)(int16_t)(currentTime - controller->prevTime) / 1.0e6;
+	d_t = 0.05;
+	controller->prevTime = currentTime;
 
-	float errorDerivative = 0;
+	double errorDerivative = 0;
 
 	if (d_t > 0) {
-		errorDerivative = (float)(error - controller->prevError) / d_t;
+		errorDerivative = (double)(error - controller->prevError) / d_t;
 	}
 
 	controller->prevError = error;
-	controller->errorIntegral += (float)error * d_t;
+	controller->errorIntegral += error * d_t;
 
-	int result = (float)error * controller->k_p +
+	if (controller->errorIntegral > controller->maxIntegral)
+		controller->errorIntegral = controller->maxIntegral;
+
+	if (controller->errorIntegral < -controller->maxIntegral)
+			controller->errorIntegral = -controller->maxIntegral;
+
+	int result = error * controller->k_p +
 			errorDerivative * controller->k_d +
 			controller->errorIntegral * controller->k_i;
 
+	controller->d_t = result;
 	return result;
 }
 
-void PID_Reset(PID_Controller *controller) {
-	controller->prevError = 0;
-	controller->prevTime = __HAL_TIM_GET_COUNTER(controller->clock);
-	controller->errorIntegral = 0;
-}
-
-void Motor_Drive(Motor *motor, int speed) {
-	uint16_t absSpeed = abs(speed);
-
-	if (speed == 0) {
-		Motor_Stop(motor);
-		return;
-	}
-
-	else if (speed < 0) {
-		HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_SET);
-	}
-
-	else {
-		HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
-	}
-
-	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, absSpeed);
-}
-
-void Motor_DrivePID(Motor *motor, int speed) {
-	if (!motor->pidActive || abs(speed - motor->targetSpeed) > 250) {
-		PID_Reset(&motor->controller);
-	}
-
-	motor->pidActive = true;
-	motor->targetSpeed = speed;
-
-	Motor_Update(motor);
-}
-
-void Motor_Stop(Motor *motor) {
-	HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
-	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, 0);
-
-	motor->pidActive = false;
-}
-
-bool Motor_CheckFault(Motor *motor) {
-	return HAL_GPIO_ReadPin(motor->faultPeripheral, motor->faultPin) == GPIO_PIN_RESET;
-}
-
 void Motor_Update(Motor *motor) {
+	Encoder_Update(&motor->encoder);
+
 	if (!motor->pidActive) {
 		return;
 	}
-
-	Encoder_Update(&motor->encoder);
 
 	int currentSpeed = motor->encoder.speed;
 	int error = motor->targetSpeed - currentSpeed;
@@ -370,8 +360,69 @@ void Robot_Update(Robot *robot) {
 	Motor_Update(&robot->backRightMotor);
 }
 
+// ==========================================
+// Miscellaneous
+// ==========================================
+
+void PID_Reset(PID_Controller *controller) {
+	controller->prevError = 0;
+	controller->prevTime = __HAL_TIM_GET_COUNTER(controller->clock);
+	controller->errorIntegral = 0;
+}
+
+void Motor_Drive(Motor *motor, int speed) {
+	if (motor->invert) speed = -speed;
+
+	uint32_t absSpeed = abs(speed);
+
+	if (speed == 0) {
+		Motor_Stop(motor);
+		return;
+	}
+
+	else if (speed < 0) {
+		motor->reversed = true;
+		HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
+	}
+
+	else if (speed > 0) {
+		motor->reversed = false;
+		HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_SET);
+	}
+
+	if (absSpeed > motor->maxPWM) {
+		absSpeed = motor->maxPWM;
+	}
+
+	motor->speed = absSpeed;
+
+	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, absSpeed);
+}
+
+void Motor_DrivePID(Motor *motor, int speed) {
+	if (!motor->pidActive || abs(speed - motor->targetSpeed) > 250) {
+		PID_Reset(&motor->controller);
+	}
+
+	motor->pidActive = true;
+	motor->targetSpeed = speed;
+
+	Motor_Update(motor);
+}
+
+void Motor_Stop(Motor *motor) {
+	HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
+	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, 0);
+
+	motor->pidActive = false;
+}
+
+bool Motor_CheckFault(Motor *motor) {
+	return HAL_GPIO_ReadPin(motor->faultPeripheral, motor->faultPin) == GPIO_PIN_RESET;
+}
+
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
-	HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
+	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
 	int frontLeftSpeed = speed + strafe + turn;
 	int frontRightSpeed = speed - strafe - turn;
@@ -392,20 +443,28 @@ void Robot_Stop(Robot *robot) {
 	Motor_Stop(&robot->backLeftMotor);
 	Motor_Stop(&robot->backRightMotor);
 
-	HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_RESET);
+	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_RESET);
 	robot->state = STATE_STOPPED;
 }
 
 void Servo_SetAngle(Servo *servo, int angle) {
-	angle = angle < 0 ? 0 : angle > 180 ? 180 : angle;
+	angle = angle < 0 ? 0 : (angle > 180 ? 180 : angle);
 	int period = __HAL_TIM_GET_AUTORELOAD(servo->pwmTimer) + 1; // 50Hz / 20ms period
 
-	float percent_rotation = (float)angle / 180;
+	double percent_rotation = (double)angle / 90.0;
 
 	int counts_per_ms = 0.05 * period;
 
-	int duty_cycle = counts_per_ms * (percent_rotation + 1);
+	int duty_cycle = counts_per_ms * (percent_rotation + 0.5);
 
+	__HAL_TIM_SET_COMPARE(servo->pwmTimer, servo->pwmChannel, duty_cycle);
+}
+
+void Servo_Drive(Servo *servo, int8_t dir) {
+	int period = __HAL_TIM_GET_AUTORELOAD(servo->pwmTimer) + 1; // 50Hz / 20ms period
+	int counts_per_ms = 0.05 * period;
+	double duty_cycle_ms = (double)dir / 256.0 + 1.5;
+	int duty_cycle = counts_per_ms * duty_cycle_ms;
 	__HAL_TIM_SET_COMPARE(servo->pwmTimer, servo->pwmChannel, duty_cycle);
 }
 
@@ -416,26 +475,31 @@ void UltraS_SendPulse(UltraS *ultrasonic) {
 		return;
 	}
 
-	HAL_GPIO_WritePin(ultrasonic->trigPeripheral, ultrasonic->trigPin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(ultrasonic->trigPeripheral, ultrasonic->trigPin, GPIO_PIN_RESET);
 
 	delay(10);
 
-	HAL_GPIO_WritePin(ultrasonic->trigPeripheral, ultrasonic->trigPin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(ultrasonic->trigPeripheral, ultrasonic->trigPin, GPIO_PIN_SET);
 
 	ultrasonic->lastUsed = HAL_GetTick();
 }
 
+// ==========================================
+// Setup
+// ==========================================
+
 void setupRobot(Robot *robot) {
 	TIM_HandleTypeDef *clock = &htim6;
+	HAL_TIM_Base_Start(clock);
 	robot->regEnablePeripheral = GPIOC;
 	robot->regEnablePin = GPIO_PIN_5;
 
 	robot->state = STATE_STOPPED;
 
-	Motor_Init(&robot->frontLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0);
-	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7);
-	Motor_Init(&robot->backLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12);
-	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, false, 0.2);
+	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, true, true, 0.2);
+	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, true, false, 0.2);
+	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, true, 0.2);
 }
 
 void setupServos(Servo *servos) {
@@ -447,7 +511,43 @@ void setupServos(Servo *servos) {
 void setupUltraS(UltraS *ultrasonic) {
 	UltraS_Init(ultrasonic, GPIOE, GPIO_PIN_6, &htim9, TIM_CHANNEL_1, 100);
 }
-// i2c
+
+/**
+ * @brief  Reads the internal temperature sensor and returns the value in Celsius.
+ * @note   ADC and the Temperature Sensor channel must be pre-configured in CubeMX.
+ * @retval Temperature in Degrees Celsius
+ */
+float Read_Internal_Temp() {
+    uint32_t raw_adc = 0;
+    float temperature = 0.0f;
+
+    // 1. Start the ADC Peripheral
+    HAL_ADC_Start(&hadc1);
+
+    // 2. Poll for conversion complete (10ms timeout)
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        // 3. Get the raw 12-bit ADC value
+        raw_adc = HAL_ADC_GetValue(&hadc1);
+    }
+
+    // 4. Stop the ADC to save power
+    HAL_ADC_Stop(&hadc1);
+
+    float v_sense = ((float)raw_adc * 3.3f) / 4095.0f;
+    temperature = ((v_sense - 0.76f) / 0.0025f) + 25.0f;
+
+    return temperature;
+}
+
+void delay (uint16_t time) {
+	__HAL_TIM_SET_COUNTER(&htim9, 0);
+	while (__HAL_TIM_GET_COUNTER(&htim9) < time);
+}
+
+// ==========================================
+// I2C
+// ==========================================
 
 uint8_t IsReadCommand(uint8_t cmd) {
     return (cmd & 0x80) != 0;
@@ -460,6 +560,8 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         case CMD_STOP:
             return 0;
         case CMD_SET_SERVO:
+        	return 2;
+        case CMD_DRIVE_SERVO:
         	return 2;
         default:
             return 0;  // Read commands or unknown
@@ -475,6 +577,8 @@ uint8_t GetTxLengthForCommand(uint8_t cmd) {
         case CMD_READ_ENC:
             return 16;
         case CMD_READ_ULTRAS:
+        	return 4;
+        case CMD_READ_TEMP:
         	return 4;
         default:
             return 0;  // Write commands or unknown
@@ -525,6 +629,12 @@ void PrepareResponseData(uint8_t cmd) {
         	InsertIntoBuffer((int)ultrasonic.currentDistance, (uint8_t *)tx_buffer);
         	break;
 
+        case CMD_READ_TEMP:
+        	float temp = Read_Internal_Temp();
+        	uint32_t temp_int = 100 * temp;
+        	InsertIntoBuffer(temp_int, (uint8_t *)tx_buffer);
+        	break;
+
         default:
             tx_length = 0;
             break;
@@ -545,13 +655,22 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
         	Robot_Stop(&robot);
             break;
 
-        case CMD_SET_SERVO:
+        case CMD_SET_SERVO: {
         	int servoNum = data[0];
         	Servo *servo = servos + servoNum;
         	int angle = data[1];
 
         	Servo_SetAngle(servo, angle);
+        	break;
+        }
+        case CMD_DRIVE_SERVO: {
+        	int servoNum = data[0];
+        	Servo *servo = servos + servoNum;
+        	int8_t dir = data[1];
 
+        	Servo_Drive(servo, dir);
+        	break;
+        }
         default:
             break;
     }
@@ -652,10 +771,9 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	}
 }
 
-void delay (uint16_t time) {
-	__HAL_TIM_SET_COUNTER(&htim9, TIM_CHANNEL_1);
-	while (__HAL_TIM_GET_COUNTER (&htim9) < time);
-}
+// ==========================================
+// Core Functions
+// ==========================================
 
 void setup() {
 	__HAL_TIM_SET_COUNTER(&htim6, 0);
@@ -663,23 +781,33 @@ void setup() {
 	setupRobot(&robot);
 	setupServos(servos);
 	setupUltraS(&ultrasonic);
+
+	HAL_TIM_IC_Start_IT(&htim9, TIM_CHANNEL_1);
 }
+
+// double x = 0;
 
 void loop() {
 	if (data_received) {
-	    data_received = 0;
+		data_received = 0;
 		ProcessReceivedData(command_byte, (uint8_t*)rx_buffer, rx_length);
 	}
 
+	// Robot_Drive(&robot, 2000, 0, 0);
 	Robot_Update(&robot);
 
-	uint32_t currentTime = HAL_GetTick();
+	// int angle = (int)x % 2 * 180;
+	// Servo_SetAngle(&servos[1], angle);
 
-	if (currentTime > ultrasonic.lastUsed + ultrasonic.delayTime) {
-		UltraS_SendPulse(&ultrasonic);
-	}
+	// uint32_t currentTime = HAL_GetTick();
 
-	HAL_Delay(5);
+	// if (currentTime > ultrasonic.lastUsed + ultrasonic.delayTime) {
+	// 	UltraS_SendPulse(&ultrasonic);
+	// }
+
+	// x += 0.1;
+
+	HAL_Delay(50);
 }
 
 /* USER CODE END 4 */
