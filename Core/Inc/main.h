@@ -47,7 +47,6 @@ typedef struct {
 	uint16_t prevTime;
 	int prevCount;
 
-	bool invert;
 	float alpha;
 
 	uint16_t dt;
@@ -70,6 +69,12 @@ typedef struct {
 	TIM_HandleTypeDef *clock;
 } PID_Controller;
 
+typedef enum {
+	STOPPED,
+	PID,
+	DISCRETE
+} Drive_Type;
+
 typedef struct {
 	Encoder encoder;
 	PID_Controller controller;
@@ -90,7 +95,8 @@ typedef struct {
 	int maxPWM;
 
 	int targetSpeed;
-	bool pidActive;
+
+	Drive_Type driveType;
 } Motor;
 
 typedef struct {
@@ -158,22 +164,24 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, bool invert, float alpha);
+void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, float alpha);
 void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
 		double k_p, double k_i, double k_d, double maxIntegral);
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
 		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
-		GPIO_TypeDef *faultPeripheral, uint16_t faultPin, bool invert, bool invertEncoder, float alpha);
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin, bool invert, float alpha);
 void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
 void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigPin,
 		TIM_HandleTypeDef *echoTimer, uint8_t echoChannel, uint32_t delayTime);
 
 void Motor_Drive(Motor *motor, int speed);
 void Motor_DrivePID(Motor *motor, int speed);
+void Motor_DriveDiscrete(Motor *motor, int speed);
 void Motor_Stop(Motor *motor);
 bool Motor_CheckFault(Motor *motor);
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
+void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
 void Robot_Stop(Robot *robot);
 
 void Servo_SetAngle(Servo *servo, int angle);
@@ -198,15 +206,16 @@ float Read_Internal_Temp();
 
 #define CMD_DRIVE       0x01  // Read 12 bytes
 #define CMD_STOP        0x02  // Read 0 bytes
+#define CMD_DRIVE_PID   0x03  // Read 12 bytes
 #define CMD_SET_SERVO   0x10  // Read 2 bytes
 #define CMD_DRIVE_SERVO 0x11  // Read 2 bytes
-							  // Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
+							  // 	Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
 #define CMD_EN_ULTRAS   0x12  // Read 0 bytes
 #define CMD_STOP_ULTRAS 0x13  // Read 0 bytes
 
-#define CMD_READ_STATUS 0x80
-#define CMD_READ_VEL    0x81
-#define CMD_READ_ENC    0x82
+#define CMD_READ_STATUS 0x80  // Publish 1 byte
+#define CMD_READ_VEL    0x81  // Publish 16 bytes
+#define CMD_READ_ENC    0x82  // Publish 16 bytes
 #define CMD_READ_ULTRAS 0x83
 #define CMD_READ_TEMP   0x84
 
