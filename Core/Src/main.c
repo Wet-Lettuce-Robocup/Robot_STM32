@@ -245,6 +245,9 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 	motor->driveType = STOPPED;
 	motor->maxPWM = 1000;
 
+	motor->cyclesSinceStop = 0;
+	motor->cyclesDelay = 100;
+
 	HAL_TIM_PWM_Start(pwmTimer, pwmChannel);
 }
 
@@ -324,6 +327,7 @@ int PID_Update(PID_Controller *controller, int error) {
 
 void Motor_Update(Motor *motor) {
 	Encoder_Update(&motor->encoder);
+	motor->cyclesSinceStop ++;
 
 	if (motor->driveType == PID) {
 		int currentSpeed = motor->encoder.speed;
@@ -336,10 +340,6 @@ void Motor_Update(Motor *motor) {
 
 	else if (motor->driveType == DISCRETE) {
 		Motor_Drive(motor, motor->targetSpeed);
-	}
-
-	else {
-		Motor_Stop(motor);
 	}
 }
 
@@ -417,6 +417,10 @@ void Motor_Drive(Motor *motor, int speed) {
 }
 
 void Motor_DrivePID(Motor *motor, int speed) {
+	if (motor->cyclesSinceStop < motor->cyclesDelay) {
+		return;
+	}
+
 	if (motor->driveType != PID || abs(speed - motor->targetSpeed) > 250) {
 		PID_Reset(&motor->controller);
 	}
@@ -428,6 +432,10 @@ void Motor_DrivePID(Motor *motor, int speed) {
 }
 
 void Motor_DriveDiscrete(Motor *motor, int speed) {
+	if (motor->cyclesSinceStop < motor->cyclesDelay) {
+		return;
+	}
+
 	motor->driveType = DISCRETE;
 	motor->targetSpeed = speed;
 
@@ -437,6 +445,8 @@ void Motor_DriveDiscrete(Motor *motor, int speed) {
 void Motor_Stop(Motor *motor) {
 	HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
 	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, 0);
+
+	motor->cyclesSinceStop = 0;
 
 	motor->driveType = STOPPED;
 }
@@ -536,10 +546,10 @@ void setupRobot(Robot *robot) {
 
 	robot->state = STATE_STOPPED;
 
-	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, 0.3);
-	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, true, 0.3);
-	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, true, 0.3);
-	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, 0.3);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, true, 0.3);
+	Motor_Init(&robot->frontRightMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, true, 0.3);
+	Motor_Init(&robot->backLeftMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, false, 0.3);
+	Motor_Init(&robot->backRightMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.3);
 }
 
 void setupServos(Servo *servos) {
@@ -853,13 +863,13 @@ void loop() {
 		ProcessReceivedData(command_byte, (uint8_t*)rx_buffer, rx_length);
 	}
 
-	HAL_GPIO_WritePin(robot.regEnablePeripheral, robot.regEnablePin, GPIO_PIN_SET);
+	// HAL_GPIO_WritePin(robot.regEnablePeripheral, robot.regEnablePin, GPIO_PIN_SET);
 
 	// Robot_Drive(&robot, 2000, 0, 0);
 	Robot_Update(&robot);
 	UltraS_Update(&ultrasonic);
 
-	HAL_Delay(10);
+	HAL_Delay(1);
 }
 
 /* USER CODE END 4 */

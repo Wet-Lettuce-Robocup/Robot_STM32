@@ -95,6 +95,8 @@ typedef struct {
 	int maxPWM;
 
 	int targetSpeed;
+	uint32_t cyclesSinceStop;
+	uint32_t cyclesDelay;
 
 	Drive_Type driveType;
 } Motor;
