@@ -125,6 +125,7 @@ typedef struct {
 typedef enum {
 	STATE_STOPPED,
 	STATE_DRIVING,
+	STATE_DRIVING_TIME,
 	STATE_FAULT
 } Robot_State;
 
@@ -136,6 +137,8 @@ typedef struct {
 
 	GPIO_TypeDef *regEnablePeripheral;
 	uint16_t regEnablePin;
+
+	uint32_t moveCompleteTime;
 
 	Robot_State state;
 } Robot;
@@ -184,6 +187,7 @@ bool Motor_CheckFault(Motor *motor);
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
+void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms);
 void Robot_Stop(Robot *robot);
 
 void Servo_SetAngle(Servo *servo, int angle);
@@ -209,6 +213,7 @@ float Read_Internal_Temp();
 #define CMD_DRIVE       0x01  // Read 12 bytes
 #define CMD_STOP        0x02  // Read 0 bytes
 #define CMD_DRIVE_PID   0x03  // Read 12 bytes
+#define CMD_DRIVE_TIME  0x04  // Read 16 bytes
 #define CMD_SET_SERVO   0x10  // Read 2 bytes
 #define CMD_DRIVE_SERVO 0x11  // Read 2 bytes
 							  // 	Direction (byte 2): 0 = stop, 1 = forward, 2 = backward

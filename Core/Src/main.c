@@ -359,6 +359,12 @@ void Robot_Update(Robot *robot) {
 		return;
 	}
 
+	if (robot->state == STATE_DRIVING_TIME && HAL_GetTick() >= robot->moveCompleteTime) {
+		Robot_Stop(robot);
+
+		return;
+	}
+
 	Motor_Update(&robot->frontLeftMotor);
 	Motor_Update(&robot->frontRightMotor);
 	Motor_Update(&robot->backLeftMotor);
@@ -487,6 +493,24 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
 	robot->state = STATE_DRIVING;
 }
 
+void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms) {
+	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
+
+	int frontLeftSpeed = speed + strafe + turn;
+	int frontRightSpeed = speed - strafe - turn;
+	int backLeftSpeed = speed - strafe + turn;
+	int backRightSpeed = speed + strafe - turn;
+
+	Motor_DriveDiscrete(&robot->frontLeftMotor, frontLeftSpeed);
+	Motor_DriveDiscrete(&robot->frontRightMotor, frontRightSpeed);
+	Motor_DriveDiscrete(&robot->backLeftMotor, backLeftSpeed);
+	Motor_DriveDiscrete(&robot->backRightMotor, backRightSpeed);
+
+	robot->moveCompleteTime = HAL_GetTick() + time_ms;
+
+	robot->state = STATE_DRIVING_TIME;
+}
+
 void Robot_Stop(Robot *robot) {
 	Motor_Stop(&robot->frontLeftMotor);
 	Motor_Stop(&robot->frontRightMotor);
@@ -609,6 +633,8 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
             return 12;
         case CMD_DRIVE_PID:
         	return 12;
+        case CMD_DRIVE_TIME:
+        	return 16;
         case CMD_STOP:
             return 0;
         case CMD_SET_SERVO:
@@ -720,6 +746,16 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
 			Robot_Drive(&robot, speed, strafe, turn);
 			break;
         }
+
+        case CMD_DRIVE_TIME: {
+			int speed = intFromBuffer(data);
+			int strafe = intFromBuffer(data + 4);
+			int turn = intFromBuffer(data + 8);
+			int time_ms = intFromBuffer(data + 12);
+
+			Robot_DriveTime(&robot, speed, strafe, turn, time_ms);
+			break;
+		}
 
         case CMD_SET_SERVO: {
         	int servoNum = data[0];
