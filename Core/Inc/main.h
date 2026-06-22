@@ -32,10 +32,123 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include <stdbool.h>
+
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+
+typedef struct {
+	TIM_HandleTypeDef *htim;
+	TIM_HandleTypeDef *clock;
+
+	int speed;
+	uint16_t prevTime;
+	int prevCount;
+
+	float alpha;
+
+	uint16_t dt;
+	int dc;
+} Encoder;
+
+typedef struct {
+	double k_p;
+	double k_i;
+	double k_d;
+	double maxIntegral;
+
+	double errorIntegral;
+	double prevError;
+	uint16_t prevTime;
+
+	double d_t;
+
+	Encoder *encoder;
+	TIM_HandleTypeDef *clock;
+} PID_Controller;
+
+typedef enum {
+	STOPPED,
+	PID,
+	DISCRETE
+} Drive_Type;
+
+typedef struct {
+	Encoder encoder;
+	PID_Controller controller;
+	TIM_HandleTypeDef *clock;
+
+	TIM_HandleTypeDef *pwmTimer;
+	uint8_t pwmChannel;
+	GPIO_TypeDef *dirGPIOPeripheral;
+	uint16_t dirGPIOPin;
+
+	GPIO_TypeDef *faultPeripheral;
+	uint16_t faultPin;
+
+	bool invert;
+
+	uint16_t speed;
+	bool reversed;
+	int maxPWM;
+
+	int targetSpeed;
+	uint32_t cyclesSinceStop;
+	uint32_t cyclesDelay;
+
+	Drive_Type driveType;
+} Motor;
+
+typedef struct {
+	TIM_HandleTypeDef *pwmTimer;
+	uint8_t pwmChannel;
+} Servo;
+
+typedef struct {
+	GPIO_TypeDef *trigPeripheral;
+	uint16_t trigPin;
+	TIM_HandleTypeDef *echoTimer;
+	uint8_t echoChannel;
+
+	double currentDistance; // mm
+	bool isFirstCaptured;
+	uint32_t icVal1;
+	uint32_t icVal2;
+	uint32_t lastUsed;
+	uint32_t delayTime;
+
+	bool enabled;
+} UltraS;
+
+typedef enum {
+	STATE_STOPPED,
+	STATE_DRIVING,
+	STATE_DRIVING_TIME,
+	STATE_FAULT
+} Robot_State;
+
+typedef struct {
+	Motor frontLeftMotor;
+	Motor frontRightMotor;
+	Motor backLeftMotor;
+	Motor backRightMotor;
+
+	GPIO_TypeDef *regEnablePeripheral;
+	uint16_t regEnablePin;
+
+	uint32_t moveCompleteTime;
+
+	Robot_State state;
+} Robot;
+
+typedef enum {
+    STATE_IDLE,
+    STATE_WAIT_COMMAND,
+    STATE_WAIT_DATA,
+    STATE_SEND_RESPONSE
+} I2C_State_t;
 
 /* USER CODE END ET */
 
@@ -47,20 +160,73 @@ extern "C" {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-/* USER CODE END EM */
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.0, 0.1, 0.0, 8000)
 
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+/* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
+void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, float alpha);
+void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *encoder,
+		double k_p, double k_i, double k_d, double maxIntegral);
+void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
+		uint8_t pwmChannel, GPIO_TypeDef *dirGPIOPeripheral, uint16_t dirGPIOPin,
+		GPIO_TypeDef *faultPeripheral, uint16_t faultPin, bool invert, float alpha);
+void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
+void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigPin,
+		TIM_HandleTypeDef *echoTimer, uint8_t echoChannel, uint32_t delayTime);
+
+void Motor_Drive(Motor *motor, int speed);
+void Motor_DrivePID(Motor *motor, int speed);
+void Motor_DriveDiscrete(Motor *motor, int speed);
+void Motor_Stop(Motor *motor);
+bool Motor_CheckFault(Motor *motor);
+
+void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
+void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
+void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms);
+void Robot_Stop(Robot *robot);
+
+void Servo_SetAngle(Servo *servo, int angle);
+void Servo_Drive(Servo *servo, int8_t dir);
+
+void UltraS_SendPulse(UltraS *ultrasonic);
+
+void Encoder_Update(Encoder *encoder);
+int PID_Update(PID_Controller *controller, int error);
+void PID_Reset(PID_Controller *controller);
+void Motor_Update(Motor *motor);
+void Robot_Update(Robot *robot);
+void UltraS_Update(UltraS *ultrasonic);
+
+float Read_Internal_Temp();
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
+
+#define CMD_DRIVE       0x01  // Read 12 bytes
+#define CMD_STOP        0x02  // Read 0 bytes
+#define CMD_DRIVE_PID   0x03  // Read 12 bytes
+#define CMD_DRIVE_TIME  0x04  // Read 16 bytes
+#define CMD_SET_SERVO   0x10  // Read 2 bytes
+#define CMD_DRIVE_SERVO 0x11  // Read 2 bytes
+							  // 	Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
+#define CMD_EN_ULTRAS   0x12  // Read 0 bytes
+#define CMD_STOP_ULTRAS 0x13  // Read 0 bytes
+
+#define CMD_READ_STATUS 0x80  // Publish 1 byte
+#define CMD_READ_VEL    0x81  // Publish 16 bytes
+#define CMD_READ_ENC    0x82  // Publish 16 bytes
+#define CMD_READ_ULTRAS 0x83
+#define CMD_READ_TEMP   0x84
+
+#define SERVO_COUNT 	3
 
 /* USER CODE END Private defines */
 
