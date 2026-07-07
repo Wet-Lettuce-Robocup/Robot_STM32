@@ -51,12 +51,13 @@
 /* USER CODE BEGIN PV */
 
 volatile I2C_State_t i2c_state = STATE_IDLE;
-volatile uint8_t command_byte = 0;
-volatile uint8_t rx_buffer[32];
-volatile uint8_t tx_buffer[32];
+volatile uint8_t tx_command_byte = 0;
+volatile uint8_t rx_buffer[QUEUE_SIZE][PACKET_SIZE];
+volatile uint8_t tx_buffer[PACKET_SIZE];
 volatile uint8_t rx_length = 0;
 volatile uint8_t tx_length = 0;
-volatile uint8_t data_received = 0;
+volatile uint8_t queue_head = 0;
+volatile uint8_t queue_tail = 0;
 
 Robot robot;
 Servo servos[SERVO_COUNT];
@@ -72,7 +73,7 @@ uint8_t GetRxLengthForCommand(uint8_t cmd);
 uint8_t GetTxLengthForCommand(uint8_t cmd);
 uint8_t IsReadCommand(uint8_t cmd);
 void InsertIntoBuffer(int data, uint8_t *buffer);
-void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len);
+void ProcessReceivedData(uint8_t cmd, uint8_t *data);
 void PrepareResponseData(uint8_t cmd);
 
 void delay(uint16_t time);
@@ -245,9 +246,6 @@ void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim,
 	motor->driveType = STOPPED;
 	motor->maxPWM = 1000;
 
-	motor->cyclesSinceStop = 0;
-	motor->cyclesDelay = 100;
-
 	HAL_TIM_PWM_Start(pwmTimer, pwmChannel);
 }
 
@@ -327,7 +325,6 @@ int PID_Update(PID_Controller *controller, int error) {
 
 void Motor_Update(Motor *motor) {
 	Encoder_Update(&motor->encoder);
-	motor->cyclesSinceStop ++;
 
 	if (motor->driveType == PID) {
 		int currentSpeed = motor->encoder.speed;
@@ -359,7 +356,14 @@ void Robot_Update(Robot *robot) {
 		return;
 	}
 
+	robot->cyclesSinceStop ++;
+
 	if (robot->state == STATE_DRIVING_TIME && HAL_GetTick() >= robot->moveCompleteTime) {
+		if (robot->cyclesSinceStop < robot->cyclesDelay) {
+			robot->moveCompleteTime = HAL_GetTick() + robot->moveTime;
+			return;
+		}
+
 		Robot_Stop(robot);
 
 		return;
@@ -423,10 +427,6 @@ void Motor_Drive(Motor *motor, int speed) {
 }
 
 void Motor_DrivePID(Motor *motor, int speed) {
-	if (motor->cyclesSinceStop < motor->cyclesDelay) {
-		return;
-	}
-
 	if (motor->driveType != PID || abs(speed - motor->targetSpeed) > 250) {
 		PID_Reset(&motor->controller);
 	}
@@ -438,10 +438,6 @@ void Motor_DrivePID(Motor *motor, int speed) {
 }
 
 void Motor_DriveDiscrete(Motor *motor, int speed) {
-	if (motor->cyclesSinceStop < motor->cyclesDelay) {
-		return;
-	}
-
 	motor->driveType = DISCRETE;
 	motor->targetSpeed = speed;
 
@@ -451,8 +447,6 @@ void Motor_DriveDiscrete(Motor *motor, int speed) {
 void Motor_Stop(Motor *motor) {
 	HAL_GPIO_WritePin(motor->dirGPIOPeripheral, motor->dirGPIOPin, GPIO_PIN_RESET);
 	__HAL_TIM_SET_COMPARE(motor->pwmTimer, motor->pwmChannel, 0);
-
-	motor->cyclesSinceStop = 0;
 
 	motor->driveType = STOPPED;
 }
@@ -495,6 +489,7 @@ void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
 
 void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms) {
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
+	robot->moveCount ++;
 
 	int frontLeftSpeed = speed + strafe + turn;
 	int frontRightSpeed = speed - strafe - turn;
@@ -507,6 +502,7 @@ void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms)
 	Motor_DriveDiscrete(&robot->backRightMotor, backRightSpeed);
 
 	robot->moveCompleteTime = HAL_GetTick() + time_ms;
+	robot->moveTime = time_ms;
 
 	robot->state = STATE_DRIVING_TIME;
 }
@@ -516,6 +512,8 @@ void Robot_Stop(Robot *robot) {
 	Motor_Stop(&robot->frontRightMotor);
 	Motor_Stop(&robot->backLeftMotor);
 	Motor_Stop(&robot->backRightMotor);
+
+	robot->cyclesSinceStop = 0;
 
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_RESET);
 	robot->state = STATE_STOPPED;
@@ -574,6 +572,10 @@ void setupRobot(Robot *robot) {
 	Motor_Init(&robot->frontRightMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, true, 0.3);
 	Motor_Init(&robot->backLeftMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, false, 0.3);
 	Motor_Init(&robot->backRightMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.3);
+
+	robot->cyclesSinceStop = 0;
+	robot->cyclesDelay = 300;
+	robot->moveCount = 0;
 }
 
 void setupServos(Servo *servos) {
@@ -662,6 +664,8 @@ uint8_t GetTxLengthForCommand(uint8_t cmd) {
         	return 4;
         case CMD_READ_TEMP:
         	return 4;
+        case CMD_READ_MOVE_C:
+        	return 4;
         default:
             return 0;  // Write commands or unknown
     }
@@ -717,13 +721,17 @@ void PrepareResponseData(uint8_t cmd) {
         	InsertIntoBuffer(temp_int, (uint8_t *)tx_buffer);
         	break;
 
+        case CMD_READ_MOVE_C:
+        	InsertIntoBuffer(robot.moveCount, (uint8_t *)tx_buffer);
+        	break;
+
         default:
             tx_length = 0;
             break;
     }
 }
 
-void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
+void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
     switch(cmd) {
         case CMD_DRIVE_PID: {
             int speed = intFromBuffer(data);
@@ -787,13 +795,13 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data, uint8_t len) {
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode) {
     if (TransferDirection == I2C_DIRECTION_TRANSMIT) {
         i2c_state = STATE_WAIT_COMMAND;
-        HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)&command_byte, 1, I2C_FIRST_FRAME);
+        HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)rx_buffer[queue_head], 1, I2C_FIRST_FRAME);
     }
 
     else {
         i2c_state = STATE_SEND_RESPONSE;
 
-        PrepareResponseData(command_byte);
+        PrepareResponseData(tx_command_byte);
 
         if (tx_length > 0) {
             HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)tx_buffer, tx_length, I2C_LAST_FRAME);
@@ -807,6 +815,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
     if (i2c_state == STATE_WAIT_COMMAND) {
         // Command byte received
+    	uint8_t command_byte = rx_buffer[queue_head][0];
 
         if (IsReadCommand(command_byte)) {
         	// This shouldn't happen
@@ -818,17 +827,31 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 
             if (rx_length > 0) {
                 i2c_state = STATE_WAIT_DATA;
-                HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)rx_buffer, rx_length, I2C_LAST_FRAME);
+                HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)(rx_buffer[queue_head] + 1), rx_length, I2C_LAST_FRAME);
             } else {
+            	uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
+
+            	if (next_head != queue_tail) {
+        			queue_head = next_head;
+        		} else {
+        			// ERROR: Queue is completely full! Main loop is lagging too far behind.
+        		}
+
                 i2c_state = STATE_IDLE;
-                data_received = 1;
                 HAL_I2C_EnableListen_IT(hi2c);
             }
         }
     }
     else if (i2c_state == STATE_WAIT_DATA) {
+    	uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
+
+    	if (next_head != queue_tail) {
+			queue_head = next_head;
+		} else {
+			// ERROR: Queue is completely full! Main loop is lagging too far behind.
+		}
+
         i2c_state = STATE_IDLE;
-        data_received = 1;
         HAL_I2C_EnableListen_IT(hi2c);
     }
 }
@@ -894,9 +917,9 @@ void setup() {
 }
 
 void loop() {
-	if (data_received) {
-		data_received = 0;
-		ProcessReceivedData(command_byte, (uint8_t*)rx_buffer, rx_length);
+	while (queue_tail != queue_head) {
+		ProcessReceivedData(rx_buffer[queue_tail][0], (uint8_t*)(rx_buffer[queue_tail] + 1));
+		queue_tail = (queue_tail + 1) % QUEUE_SIZE;
 	}
 
 	// HAL_GPIO_WritePin(robot.regEnablePeripheral, robot.regEnablePin, GPIO_PIN_SET);

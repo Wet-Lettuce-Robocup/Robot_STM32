@@ -95,8 +95,6 @@ typedef struct {
 	int maxPWM;
 
 	int targetSpeed;
-	uint32_t cyclesSinceStop;
-	uint32_t cyclesDelay;
 
 	Drive_Type driveType;
 } Motor;
@@ -138,7 +136,12 @@ typedef struct {
 	GPIO_TypeDef *regEnablePeripheral;
 	uint16_t regEnablePin;
 
+	uint32_t moveTime;
 	uint32_t moveCompleteTime;
+	uint32_t moveCount;
+
+	uint32_t cyclesSinceStop;
+	uint32_t cyclesDelay;
 
 	Robot_State state;
 } Robot;
@@ -223,10 +226,13 @@ float Read_Internal_Temp();
 #define CMD_READ_STATUS 0x80  // Publish 1 byte
 #define CMD_READ_VEL    0x81  // Publish 16 bytes
 #define CMD_READ_ENC    0x82  // Publish 16 bytes
-#define CMD_READ_ULTRAS 0x83
-#define CMD_READ_TEMP   0x84
+#define CMD_READ_ULTRAS 0x83  // Publish 4 bytes
+#define CMD_READ_TEMP   0x84  // Publish 4 bytes
+#define CMD_READ_MOVE_C 0x85  // Publish 4 bytes
 
 #define SERVO_COUNT 	3
+#define QUEUE_SIZE      8
+#define PACKET_SIZE     32
 
 /* USER CODE END Private defines */
 
