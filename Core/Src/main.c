@@ -818,7 +818,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
     	uint8_t command_byte = rx_buffer[queue_head][0];
 
         if (IsReadCommand(command_byte)) {
-        	// This shouldn't happen
+        	tx_command_byte = command_byte;
             i2c_state = STATE_IDLE;
             HAL_I2C_EnableListen_IT(hi2c);
         }
