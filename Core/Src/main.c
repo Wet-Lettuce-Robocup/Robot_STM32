@@ -287,6 +287,10 @@ void Encoder_Update(Encoder *encoder) {
 	encoder->dt = d_t;
 	encoder->dc = d_c;
 
+	if (d_t == 0) {
+	    return;
+	}
+
 	double raw_speed = d_c * 1000000 / d_t;
 
 	encoder->speed = (encoder->alpha * raw_speed) + ((1.0f - encoder->alpha) * encoder->speed);
@@ -455,6 +459,86 @@ bool Motor_CheckFault(Motor *motor) {
 	return HAL_GPIO_ReadPin(motor->faultPeripheral, motor->faultPin) == GPIO_PIN_RESET;
 }
 
+void Robot_CalculateWheelSpeeds(
+    int speed,
+    int strafe,
+    int turn,
+    int *frontLeftSpeed,
+    int *frontRightSpeed,
+    int *backLeftSpeed,
+    int *backRightSpeed)
+{
+    // Extra speed applied to the diagonal wheels during turning.
+    // 0.0 = current behaviour
+    // 0.10 = 10% extra
+    // 0.20 = 20% extra
+    // etc.
+    const float diagonalFactor = 0.20f;
+
+    *frontLeftSpeed =
+        speed + strafe + turn;
+
+    *frontRightSpeed =
+        speed - strafe - (int)(turn * (1.0f + diagonalFactor));
+
+    *backLeftSpeed =
+        speed - strafe + (int)(turn * (1.0f + diagonalFactor));
+
+    *backRightSpeed =
+        speed + strafe - turn;
+
+    if (turn > 0)
+	{
+		// Right turn:
+		// FR and BL get extra turning speed
+
+		*frontLeftSpeed =
+			speed + strafe + turn;
+
+		*frontRightSpeed =
+			speed - strafe - (int)(turn * (1.0f + diagonalFactor));
+
+		*backLeftSpeed =
+			speed - strafe + (int)(turn * (1.0f + diagonalFactor));
+
+		*backRightSpeed =
+			speed + strafe - turn;
+	}
+	else if (turn < 0)
+	{
+		// Left turn:
+		// FL and BR get extra turning speed
+
+		*frontLeftSpeed =
+			speed + strafe + (int)(turn * (1.0f + diagonalFactor));
+
+		*frontRightSpeed =
+			speed - strafe - turn;
+
+		*backLeftSpeed =
+			speed - strafe + turn;
+
+		*backRightSpeed =
+			speed + strafe - (int)(turn * (1.0f + diagonalFactor));
+	}
+	else
+	{
+		// Straight / no turning
+
+		*frontLeftSpeed =
+			speed + strafe;
+
+		*frontRightSpeed =
+			speed - strafe;
+
+		*backLeftSpeed =
+			speed - strafe;
+
+		*backRightSpeed =
+			speed + strafe;
+	}
+}
+
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn) {
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
@@ -474,10 +558,20 @@ void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn) {
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
-	int frontLeftSpeed = speed + strafe + turn;
-	int frontRightSpeed = speed - strafe - turn;
-	int backLeftSpeed = speed - strafe + turn;
-	int backRightSpeed = speed + strafe - turn;
+	int frontLeftSpeed;
+	int frontRightSpeed;
+	int backLeftSpeed;
+	int backRightSpeed;
+
+	Robot_CalculateWheelSpeeds(
+	        speed,
+	        strafe,
+	        turn,
+	        &frontLeftSpeed,
+	        &frontRightSpeed,
+	        &backLeftSpeed,
+	        &backRightSpeed
+	    );
 
 	Motor_DriveDiscrete(&robot->frontLeftMotor, frontLeftSpeed);
 	Motor_DriveDiscrete(&robot->frontRightMotor, frontRightSpeed);
@@ -491,10 +585,20 @@ void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms)
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 	robot->moveCount ++;
 
-	int frontLeftSpeed = speed + strafe + turn;
-	int frontRightSpeed = speed - strafe - turn;
-	int backLeftSpeed = speed - strafe + turn;
-	int backRightSpeed = speed + strafe - turn;
+	int frontLeftSpeed;
+	int frontRightSpeed;
+	int backLeftSpeed;
+	int backRightSpeed;
+
+	Robot_CalculateWheelSpeeds(
+			speed,
+			strafe,
+			turn,
+			&frontLeftSpeed,
+			&frontRightSpeed,
+			&backLeftSpeed,
+			&backRightSpeed
+		);
 
 	Motor_DriveDiscrete(&robot->frontLeftMotor, frontLeftSpeed);
 	Motor_DriveDiscrete(&robot->frontRightMotor, frontRightSpeed);
@@ -785,7 +889,7 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
         	ultrasonic.enabled = true;
         	break;
         case CMD_STOP_ULTRAS:
-        	ultrasonic.enabled = true;
+        	ultrasonic.enabled = false;
         	break;
         default:
             break;

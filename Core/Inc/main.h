@@ -188,6 +188,9 @@ void Motor_DriveDiscrete(Motor *motor, int speed);
 void Motor_Stop(Motor *motor);
 bool Motor_CheckFault(Motor *motor);
 
+void Robot_CalculateWheelSpeeds(int speed, int strafe, int turn, int *frontLeftSpeed,
+		int *frontRightSpeed, int *backLeftSpeed, int *backRightSpeed);
+
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
 void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms);
