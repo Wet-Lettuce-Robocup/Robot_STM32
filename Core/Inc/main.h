@@ -199,6 +199,9 @@ void Robot_Stop(Robot *robot);
 void Servo_SetAngle(Servo *servo, int angle);
 void Servo_Drive(Servo *servo, int8_t dir);
 
+void Stop_Servos(Servo *servo);
+void Servo_Stop(Servo *servo);
+
 void UltraS_SendPulse(UltraS *ultrasonic);
 
 void Encoder_Update(Encoder *encoder);
@@ -225,6 +228,8 @@ float Read_Internal_Temp();
 							  // 	Direction (byte 2): 0 = stop, 1 = forward, 2 = backward
 #define CMD_EN_ULTRAS   0x12  // Read 0 bytes
 #define CMD_STOP_ULTRAS 0x13  // Read 0 bytes
+
+#define CMD_STOP_SERVOS 0x14 // Read 0 bytes
 
 #define CMD_READ_STATUS 0x80  // Publish 1 byte
 #define CMD_READ_VEL    0x81  // Publish 16 bytes

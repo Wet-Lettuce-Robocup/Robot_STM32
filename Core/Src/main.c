@@ -59,6 +59,8 @@ volatile uint8_t tx_length = 0;
 volatile uint8_t queue_head = 0;
 volatile uint8_t queue_tail = 0;
 
+volatile bool servos_active = false;
+
 Robot robot;
 Servo servos[SERVO_COUNT];
 UltraS ultrasonic;
@@ -624,6 +626,9 @@ void Robot_Stop(Robot *robot) {
 }
 
 void Servo_SetAngle(Servo *servo, int angle) {
+	if (!servos_active){
+		setupServos(servos);
+	}
 	angle = angle < 0 ? 0 : (angle > 180 ? 180 : angle);
 	int period = __HAL_TIM_GET_AUTORELOAD(servo->pwmTimer) + 1; // 50Hz / 20ms period
 
@@ -642,6 +647,18 @@ void Servo_Drive(Servo *servo, int8_t dir) {
 	double duty_cycle_ms = (double)dir / 256.0 + 1.5;
 	int duty_cycle = counts_per_ms * duty_cycle_ms;
 	__HAL_TIM_SET_COMPARE(servo->pwmTimer, servo->pwmChannel, duty_cycle);
+}
+
+void Servo_Stop(Servo *servo){
+	HAL_TIM_PWM_Stop(servo->pwmTimer, servo->pwmChannel);
+}
+
+void Stop_Servos(Servo *servo){
+	Servo_Stop(&servos[0]);
+	Servo_Stop(&servos[1]);
+	Servo_Stop(&servos[2]);
+
+	servos_active = false;
 }
 
 void UltraS_SendPulse(UltraS *ultrasonic) {
@@ -686,6 +703,7 @@ void setupServos(Servo *servos) {
 	Servo_Init(servos, &htim8, TIM_CHANNEL_1);
 	Servo_Init(servos + 1, &htim8, TIM_CHANNEL_2);
 	Servo_Init(servos + 2, &htim8, TIM_CHANNEL_3);
+	servos_active = true;
 }
 
 void setupUltraS(UltraS *ultrasonic) {
@@ -747,6 +765,8 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         	return 2;
         case CMD_DRIVE_SERVO:
         	return 2;
+        case CMD_STOP_SERVOS:
+        	return 0;
         case CMD_EN_ULTRAS:
         	return 0;
         case CMD_STOP_ULTRAS:
@@ -871,6 +891,9 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
 
         case CMD_SET_SERVO: {
         	int servoNum = data[0];
+        	if (servoNum >= SERVO_COUNT) {
+        	    break;
+        	}
         	Servo *servo = servos + servoNum;
         	int angle = data[1];
 
@@ -879,10 +902,17 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
         }
         case CMD_DRIVE_SERVO: {
         	int servoNum = data[0];
+        	if (servoNum >= SERVO_COUNT) {
+        	    break;
+        	}
         	Servo *servo = servos + servoNum;
         	int8_t dir = data[1];
 
         	Servo_Drive(servo, dir);
+        	break;
+        }
+        case CMD_STOP_SERVOS: {
+        	Stop_Servos(servos);
         	break;
         }
         case CMD_EN_ULTRAS:
