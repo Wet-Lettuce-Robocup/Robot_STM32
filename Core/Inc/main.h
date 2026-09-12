@@ -45,12 +45,12 @@ typedef struct {
 
 	int speed;
 	uint16_t prevTime;
-	int prevCount;
+	int16_t prevCount;
 
 	float alpha;
 
 	uint16_t dt;
-	int dc;
+	int16_t dc;
 } Encoder;
 
 typedef struct {
@@ -61,7 +61,6 @@ typedef struct {
 
 	double errorIntegral;
 	double prevError;
-	uint16_t prevTime;
 
 	double d_t;
 
@@ -163,7 +162,7 @@ typedef enum {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.0, 0.1, 0.0, 8000)
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.15, 0.2, 0.0, 5000)
 
 /* USER CODE END EM */
 
@@ -209,6 +208,7 @@ int PID_Update(PID_Controller *controller, int error);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor);
 void Robot_Update(Robot *robot);
+void Robot_UpdatePID(Robot *robot);
 void UltraS_Update(UltraS *ultrasonic);
 
 float Read_Internal_Temp();
@@ -241,6 +241,8 @@ float Read_Internal_Temp();
 #define SERVO_COUNT 	3
 #define QUEUE_SIZE      8
 #define PACKET_SIZE     32
+
+#define PID_DT 			0.05
 
 /* USER CODE END Private defines */
 

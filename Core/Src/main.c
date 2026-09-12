@@ -128,6 +128,7 @@ int main(void)
   MX_TIM9_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
+  MX_TIM10_Init();
   /* USER CODE BEGIN 2 */
   setup();
 
@@ -203,10 +204,12 @@ void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef 
 	encoder->htim = htim;
 	encoder->speed = 0;
 
-	encoder->prevCount = 0;
+	encoder->prevCount = __HAL_TIM_GET_COUNTER(htim);
 	encoder->prevTime = __HAL_TIM_GET_COUNTER(clock);
 
 	encoder->alpha = alpha;
+    encoder->dt = 0;
+    encoder->dc = 0;
 
 	HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL);
 }
@@ -223,7 +226,6 @@ void PID_Init(PID_Controller *controller, TIM_HandleTypeDef *clock, Encoder *enc
 
 	controller->errorIntegral = 0;
 	controller->prevError = 0;
-	controller->prevTime = __HAL_TIM_GET_COUNTER(clock);
 }
 
 void Motor_Init(Motor *motor, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, TIM_HandleTypeDef *pwmTimer,
@@ -283,8 +285,8 @@ void Encoder_Update(Encoder *encoder) {
 	uint16_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
 	uint16_t d_t = currentTime - encoder->prevTime;
 
-	int16_t currentCount = __HAL_TIM_GET_COUNTER(encoder->htim);
-	int d_c = currentCount - encoder->prevCount;
+	uint16_t currentCount = __HAL_TIM_GET_COUNTER(encoder->htim);
+	int16_t d_c = currentCount - encoder->prevCount;
 
 	encoder->dt = d_t;
 	encoder->dc = d_c;
@@ -293,26 +295,21 @@ void Encoder_Update(Encoder *encoder) {
 	    return;
 	}
 
-	double raw_speed = d_c * 1000000 / d_t;
+	double raw_speed = ((double)d_c * 1000000.0) / (double)d_t;
 
 	encoder->speed = (encoder->alpha * raw_speed) + ((1.0f - encoder->alpha) * encoder->speed);
+
 	encoder->prevTime = currentTime;
 	encoder->prevCount = currentCount;
 }
 
 int PID_Update(PID_Controller *controller, int error) {
-	uint16_t currentTime = __HAL_TIM_GET_COUNTER(controller->clock);
-	double d_t = (double)(int16_t)(currentTime - controller->prevTime) / 1.0e6;
-	d_t = 0.05;
-	controller->prevTime = currentTime;
+	double d_t = PID_DT;
 
-	double errorDerivative = 0;
-
-	if (d_t > 0) {
-		errorDerivative = (double)(error - controller->prevError) / d_t;
-	}
+	double errorDerivative = (error - controller->prevError) / d_t;
 
 	controller->prevError = error;
+
 	controller->errorIntegral += error * d_t;
 
 	if (controller->errorIntegral > controller->maxIntegral)
@@ -321,12 +318,12 @@ int PID_Update(PID_Controller *controller, int error) {
 	if (controller->errorIntegral < -controller->maxIntegral)
 			controller->errorIntegral = -controller->maxIntegral;
 
-	int result = error * controller->k_p +
+	double result = error * controller->k_p +
 			errorDerivative * controller->k_d +
 			controller->errorIntegral * controller->k_i;
 
-	controller->d_t = result;
-	return result;
+	controller->d_t = d_t;
+	return (int)result;
 }
 
 void Motor_Update(Motor *motor) {
@@ -344,6 +341,13 @@ void Motor_Update(Motor *motor) {
 	else if (motor->driveType == DISCRETE) {
 		Motor_Drive(motor, motor->targetSpeed);
 	}
+}
+
+void Robot_UpdatePID(Robot *robot){
+	Motor_Update(&robot->frontLeftMotor);
+	Motor_Update(&robot->frontRightMotor);
+	Motor_Update(&robot->backLeftMotor);
+	Motor_Update(&robot->backRightMotor);
 }
 
 void Robot_Update(Robot *robot) {
@@ -375,10 +379,6 @@ void Robot_Update(Robot *robot) {
 		return;
 	}
 
-	Motor_Update(&robot->frontLeftMotor);
-	Motor_Update(&robot->frontRightMotor);
-	Motor_Update(&robot->backLeftMotor);
-	Motor_Update(&robot->backRightMotor);
 }
 
 void UltraS_Update(UltraS *ultrasonic) {
@@ -399,7 +399,6 @@ void UltraS_Update(UltraS *ultrasonic) {
 
 void PID_Reset(PID_Controller *controller) {
 	controller->prevError = 0;
-	controller->prevTime = __HAL_TIM_GET_COUNTER(controller->clock);
 	controller->errorIntegral = 0;
 }
 
@@ -440,14 +439,12 @@ void Motor_DrivePID(Motor *motor, int speed) {
 	motor->driveType = PID;
 	motor->targetSpeed = speed;
 
-	Motor_Update(motor);
 }
 
 void Motor_DriveDiscrete(Motor *motor, int speed) {
 	motor->driveType = DISCRETE;
 	motor->targetSpeed = speed;
 
-	Motor_Update(motor);
 }
 
 void Motor_Stop(Motor *motor) {
@@ -1036,6 +1033,14 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	}
 }
 
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM10) {
+
+        Robot_UpdatePID(&robot);
+    }
+}
+
 // ==========================================
 // Core Functions
 // ==========================================
@@ -1047,6 +1052,7 @@ void setup() {
 	setupServos(servos);
 	setupUltraS(&ultrasonic);
 
+	HAL_TIM_Base_Start_IT(&htim10);
 	HAL_TIM_IC_Start_IT(&htim9, TIM_CHANNEL_1);
 }
 
