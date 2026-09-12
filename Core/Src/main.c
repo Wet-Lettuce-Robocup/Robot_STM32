@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <math.h>
 
 /* USER CODE END Includes */
@@ -60,6 +61,8 @@ volatile uint8_t queue_head = 0;
 volatile uint8_t queue_tail = 0;
 
 volatile bool servos_active = false;
+
+static uint32_t lastPrint = 0;
 
 Robot robot;
 Servo servos[SERVO_COUNT];
@@ -103,7 +106,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+   HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -199,6 +202,7 @@ void SystemClock_Config(void)
 // ==========================================
 
 
+
 void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef *htim, float alpha) {
 	encoder->clock = clock;
 	encoder->htim = htim;
@@ -286,7 +290,7 @@ void Encoder_Update(Encoder *encoder) {
 	uint16_t d_t = currentTime - encoder->prevTime;
 
 	uint16_t currentCount = __HAL_TIM_GET_COUNTER(encoder->htim);
-	int16_t d_c = currentCount - encoder->prevCount;
+	int16_t d_c = -(int16_t)(currentCount - encoder->prevCount);
 
 	encoder->dt = d_t;
 	encoder->dc = d_c;
@@ -326,16 +330,19 @@ int PID_Update(PID_Controller *controller, int error) {
 	return (int)result;
 }
 
-void Motor_Update(Motor *motor) {
-	Encoder_Update(&motor->encoder);
+void Motor_Update(Motor *motor, bool updatePID) {
+	if (updatePID){
+		Encoder_Update(&motor->encoder);
+	}
 
-	if (motor->driveType == PID) {
+	if (motor->driveType == PID && updatePID) {
+
 		int currentSpeed = motor->encoder.speed;
 		int error = motor->targetSpeed - currentSpeed;
 
-		int pid = PID_Update(&motor->controller, error);
+		motor->pidOutput = PID_Update(&motor->controller, error);
 
-		Motor_Drive(motor, pid);
+		Motor_Drive(motor, motor->pidOutput);
 	}
 
 	else if (motor->driveType == DISCRETE) {
@@ -344,10 +351,10 @@ void Motor_Update(Motor *motor) {
 }
 
 void Robot_UpdatePID(Robot *robot){
-	Motor_Update(&robot->frontLeftMotor);
-	Motor_Update(&robot->frontRightMotor);
-	Motor_Update(&robot->backLeftMotor);
-	Motor_Update(&robot->backRightMotor);
+	Motor_Update(&robot->frontLeftMotor, true);
+	Motor_Update(&robot->frontRightMotor, true);
+	Motor_Update(&robot->backLeftMotor, true);
+	Motor_Update(&robot->backRightMotor, true);
 }
 
 void Robot_Update(Robot *robot) {
@@ -378,6 +385,11 @@ void Robot_Update(Robot *robot) {
 
 		return;
 	}
+
+	Motor_Update(&robot->frontLeftMotor, false);
+	Motor_Update(&robot->frontRightMotor, false);
+	Motor_Update(&robot->backLeftMotor, false);
+	Motor_Update(&robot->backRightMotor, false);
 
 }
 
@@ -622,6 +634,13 @@ void Robot_Stop(Robot *robot) {
 	robot->state = STATE_STOPPED;
 }
 
+void setupServos(Servo *servos) {
+	Servo_Init(servos, &htim8, TIM_CHANNEL_1);
+	Servo_Init(servos + 1, &htim8, TIM_CHANNEL_2);
+	Servo_Init(servos + 2, &htim8, TIM_CHANNEL_3);
+	servos_active = true;
+}
+
 void Servo_SetAngle(Servo *servo, int angle) {
 	if (!servos_active){
 		setupServos(servos);
@@ -686,21 +705,14 @@ void setupRobot(Robot *robot) {
 
 	robot->state = STATE_STOPPED;
 
-	Motor_Init(&robot->frontLeftMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, true, 0.3);
-	Motor_Init(&robot->frontRightMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, true, 0.3);
-	Motor_Init(&robot->backLeftMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, false, 0.3);
-	Motor_Init(&robot->backRightMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.3);
+	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, false, 0.3);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, 0.3);
+	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, 0.3);
+	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.3);
 
 	robot->cyclesSinceStop = 0;
 	robot->cyclesDelay = 300;
 	robot->moveCount = 0;
-}
-
-void setupServos(Servo *servos) {
-	Servo_Init(servos, &htim8, TIM_CHANNEL_1);
-	Servo_Init(servos + 1, &htim8, TIM_CHANNEL_2);
-	Servo_Init(servos + 2, &htim8, TIM_CHANNEL_3);
-	servos_active = true;
 }
 
 void setupUltraS(UltraS *ultrasonic) {
@@ -1054,6 +1066,7 @@ void setup() {
 
 	HAL_TIM_Base_Start_IT(&htim10);
 	HAL_TIM_IC_Start_IT(&htim9, TIM_CHANNEL_1);
+
 }
 
 void loop() {
@@ -1067,6 +1080,18 @@ void loop() {
 	// Robot_Drive(&robot, 2000, 0, 0);
 	Robot_Update(&robot);
 	UltraS_Update(&ultrasonic);
+
+	if (HAL_GetTick() - lastPrint <= 1) {
+	    //lastPrint = HAL_GetTick();
+
+	    //Robot_DrivePID(&robot, 200, 0, 0);
+		//Motor_DrivePID(&robot.frontLeftMotor, 1200);
+
+		//Motor_Drive(&robot.frontLeftMotor, 150);
+
+
+
+	}
 
 	HAL_Delay(1);
 }
