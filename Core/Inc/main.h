@@ -51,6 +51,8 @@ typedef struct {
 
 	uint16_t dt;
 	int16_t dc;
+
+    int32_t position;
 } Encoder;
 
 typedef struct {
@@ -128,6 +130,12 @@ typedef enum {
 	STATE_FAULT
 } Robot_State;
 
+typedef enum {
+    MOTION_NONE,
+    MOTION_DISTANCE,
+    MOTION_TURN
+} Robot_Motion;
+
 typedef struct {
 	Motor frontLeftMotor;
 	Motor frontRightMotor;
@@ -145,6 +153,11 @@ typedef struct {
 	uint32_t cyclesDelay;
 
 	Robot_State state;
+
+	Robot_Motion motion;
+
+	int32_t motionTargetCounts;
+	int motionSpeed;
 } Robot;
 
 typedef enum {
@@ -195,6 +208,8 @@ void Robot_CalculateWheelSpeeds(int speed, int strafe, int turn, int *frontLeftS
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
 void Robot_DriveTime(Robot *robot, int speed, int strafe, int turn, int time_ms);
+void Robot_DriveDistance(Robot *robot, int distance_mm, int speed);
+void Robot_TurnAngle(Robot *robot, int angle_deg, int speed);
 void Robot_Stop(Robot *robot);
 
 void Servo_SetAngle(Servo *servo, int angle);
@@ -206,12 +221,14 @@ void Servo_Stop(Servo *servo);
 void UltraS_SendPulse(UltraS *ultrasonic);
 
 void Encoder_Update(Encoder *encoder);
+void Robot_ResetEncoderPositions(Robot *robot);
 int PID_Update(PID_Controller *controller, int error);
 int Motor_FeedForward(int targetSpeed);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor, bool updatePID);
 void Robot_Update(Robot *robot);
 void Robot_UpdatePID(Robot *robot);
+void Robot_UpdateMotion(Robot *robot);
 void UltraS_Update(UltraS *ultrasonic);
 
 float Read_Internal_Temp();
@@ -233,6 +250,8 @@ float Read_Internal_Temp();
 #define CMD_STOP_ULTRAS 0x13  // Read 0 bytes
 
 #define CMD_STOP_SERVOS 0x14 // Read 0 bytes
+#define CMD_DRIVE_DIST 	0x15 // Read 8 bytes
+#define CMD_TURN_ANGLE	0x16 // Read 8 bytes
 
 #define CMD_READ_STATUS 0x80  // Publish 1 byte
 #define CMD_READ_VEL    0x81  // Publish 16 bytes
@@ -246,6 +265,10 @@ float Read_Internal_Temp();
 #define PACKET_SIZE     32
 
 #define PID_DT 			0.05
+
+#define ENCODER_COUNTS_PER_REV 1000.0
+#define WHEEL_DIAMETER_MM 79.0
+#define TRACK_WIDTH_MM 165.0
 
 /* USER CODE END Private defines */
 

@@ -62,8 +62,6 @@ volatile uint8_t queue_tail = 0;
 
 volatile bool servos_active = false;
 
-static uint32_t lastPrint = 0;
-
 Robot robot;
 Servo servos[SERVO_COUNT];
 UltraS ultrasonic;
@@ -215,6 +213,8 @@ void Encoder_Init(Encoder *encoder, TIM_HandleTypeDef *clock, TIM_HandleTypeDef 
     encoder->dt = 0;
     encoder->dc = 0;
 
+    encoder->position = 0;
+
 	HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL);
 }
 
@@ -299,12 +299,33 @@ void Encoder_Update(Encoder *encoder) {
 	    return;
 	}
 
+    encoder->position += d_c;
+
 	double raw_speed = ((double)d_c * 1000000.0) / (double)d_t;
 
 	encoder->speed = (encoder->alpha * raw_speed) + ((1.0f - encoder->alpha) * encoder->speed);
 
 	encoder->prevTime = currentTime;
 	encoder->prevCount = currentCount;
+}
+
+void Robot_ResetEncoderPositions(Robot *robot) {
+	Encoder *encoders[] = {
+		&robot->frontLeftMotor.encoder,
+		&robot->frontRightMotor.encoder,
+		&robot->backLeftMotor.encoder,
+		&robot->backRightMotor.encoder
+	};
+
+	for (int i = 0; i < 4; i++) {
+
+		encoders[i]->position = 0;
+
+		encoders[i]->prevCount = __HAL_TIM_GET_COUNTER(encoders[i]->htim);
+
+		encoders[i]->dc = 0;
+		encoders[i]->dt = 0;
+	}
 }
 
 int PID_Update(PID_Controller *controller, int error) {
@@ -391,6 +412,12 @@ void Robot_Update(Robot *robot) {
 
 	robot->cyclesSinceStop ++;
 
+    Robot_UpdateMotion(robot);
+
+    if (robot->state == STATE_STOPPED) {
+            return;
+        }
+
 	if (robot->state == STATE_DRIVING_TIME && HAL_GetTick() >= robot->moveCompleteTime) {
 		if (robot->cyclesSinceStop < robot->cyclesDelay) {
 			robot->moveCompleteTime = HAL_GetTick() + robot->moveTime;
@@ -407,6 +434,58 @@ void Robot_Update(Robot *robot) {
 	Motor_Update(&robot->backLeftMotor, false);
 	Motor_Update(&robot->backRightMotor, false);
 
+}
+
+void Robot_UpdateMotion(Robot *robot)
+{
+    if (robot->motion == MOTION_NONE) {
+        return;
+    }
+
+    int32_t averagePosition = 0;
+
+    if (robot->motion == MOTION_DISTANCE)
+    {
+        averagePosition =
+            (
+                robot->frontLeftMotor.encoder.position +
+                robot->frontRightMotor.encoder.position +
+                robot->backLeftMotor.encoder.position +
+                robot->backRightMotor.encoder.position
+            ) / 4;
+
+        if (abs(averagePosition) >= robot->motionTargetCounts)
+        {
+            Robot_Stop(robot);
+            return;
+        }
+    }
+    else if (robot->motion == MOTION_TURN)
+    {
+
+        int32_t leftPosition =
+            (
+                robot->frontLeftMotor.encoder.position +
+                robot->backLeftMotor.encoder.position
+            ) / 2;
+
+        int32_t rightPosition =
+            (
+                robot->frontRightMotor.encoder.position +
+                robot->backRightMotor.encoder.position
+            ) / 2;
+
+        int32_t leftDistance = abs(leftPosition);
+        int32_t rightDistance = abs(rightPosition);
+
+        averagePosition = (leftDistance + rightDistance) / 2;
+
+        if (averagePosition >= robot->motionTargetCounts)
+        {
+            Robot_Stop(robot);
+            return;
+        }
+    }
 }
 
 void UltraS_Update(UltraS *ultrasonic) {
@@ -569,6 +648,8 @@ void Robot_CalculateWheelSpeeds(
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn) {
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
+	robot->motion = MOTION_NONE;
+
 	int frontLeftSpeed = speed + strafe + turn;
 	int frontRightSpeed = speed - strafe - turn;
 	int backLeftSpeed = speed - strafe + turn;
@@ -580,6 +661,67 @@ void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn) {
 	Motor_DrivePID(&robot->backRightMotor, backRightSpeed);
 
 	robot->state = STATE_DRIVING;
+}
+
+void Robot_DriveDistance(Robot *robot, int distance_mm, int speed) {
+
+    if (distance_mm == 0 || speed == 0) {
+    	Robot_Stop(robot);
+        return;
+    }
+
+    Robot_ResetEncoderPositions(robot);
+
+    float wheelCircumference = M_PI * WHEEL_DIAMETER_MM;
+
+    float countsPerMM = ENCODER_COUNTS_PER_REV / wheelCircumference;
+
+	robot->motionTargetCounts = (int32_t)(fabsf(distance_mm) * countsPerMM);
+
+	robot->motionSpeed = abs(speed);
+
+
+	if (distance_mm > 0) {
+		Robot_DrivePID(robot, robot->motionSpeed, 0, 0);
+	}
+	else {
+		Robot_DrivePID(robot, -robot->motionSpeed, 0, 0);
+	}
+
+    robot->motion = MOTION_DISTANCE;
+
+}
+
+void Robot_TurnAngle(Robot *robot, int angle_deg, int speed) {
+
+    if (angle_deg == 0 || speed == 0) {
+    	Robot_Stop(robot);
+        return;
+    }
+
+    Robot_ResetEncoderPositions(robot);
+
+	float wheelCircumference = M_PI * WHEEL_DIAMETER_MM;
+
+	float turnDistanceMM = (fabsf(angle_deg) / 360.0f) * M_PI * TRACK_WIDTH_MM;
+
+    turnDistanceMM *= 2.0f;
+
+    float countsPerMM = ENCODER_COUNTS_PER_REV / wheelCircumference;
+
+	robot->motionTargetCounts = (int32_t)(turnDistanceMM * countsPerMM);
+
+	robot->motionSpeed = abs(speed);
+
+
+	if (angle_deg > 0) {
+		Robot_DrivePID(robot, 0, 0, robot->motionSpeed);
+	}
+	else {
+		Robot_DrivePID(robot, 0, 0, -robot->motionSpeed);
+	}
+
+	robot->motion = MOTION_TURN;
 }
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn) {
@@ -645,6 +787,8 @@ void Robot_Stop(Robot *robot) {
 	Motor_Stop(&robot->backRightMotor);
 
 	robot->cyclesSinceStop = 0;
+
+    robot->motion = MOTION_NONE;
 
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_RESET);
 	robot->state = STATE_STOPPED;
@@ -796,6 +940,10 @@ uint8_t GetRxLengthForCommand(uint8_t cmd) {
         	return 0;
         case CMD_STOP_ULTRAS:
         	return 0;
+        case CMD_DRIVE_DIST:
+        	return 8;
+        case CMD_TURN_ANGLE:
+        	return 8;
         default:
             return 0;  // Read commands or unknown
     }
@@ -940,12 +1088,30 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
         	Stop_Servos(servos);
         	break;
         }
-        case CMD_EN_ULTRAS:
+        case CMD_EN_ULTRAS:{
         	ultrasonic.enabled = true;
         	break;
-        case CMD_STOP_ULTRAS:
+        }
+        case CMD_STOP_ULTRAS:{
         	ultrasonic.enabled = false;
         	break;
+        }
+        case CMD_DRIVE_DIST: {
+        	int distance_mm = intFromBuffer(data);
+        	int speed = intFromBuffer(data + 4);
+
+            Robot_DriveDistance(&robot, distance_mm, speed);
+            break;
+
+        }
+        case CMD_TURN_ANGLE: {
+        	int angle_deg = intFromBuffer(data);
+			int speed = intFromBuffer(data + 4);
+
+			Robot_TurnAngle(&robot, angle_deg, speed);
+			break;
+        }
+
         default:
             break;
     }
@@ -1097,10 +1263,11 @@ void loop() {
 	Robot_Update(&robot);
 	UltraS_Update(&ultrasonic);
 
-	if (HAL_GetTick() - lastPrint <= 1) {
-	    //lastPrint = HAL_GetTick();
+	static bool testStarted = false;
 
-	    Robot_DrivePID(&robot, 750, 0, 0);
+	if (!testStarted) {
+		testStarted = true;
+//	    Robot_DrivePID(&robot, 750, 0, 0);
 //		Motor_DrivePID(&robot.backRightMotor, 750);
 
 //		Motor_Drive(&robot.frontLeftMotor, 90);
@@ -1108,31 +1275,9 @@ void loop() {
 //		Motor_Drive(&robot.backLeftMotor, 90);
 //		Motor_Drive(&robot.backRightMotor, 90);
 
+//		Robot_TurnAngle(&robot, 90, 400);
 	}
-//	if (HAL_GetTick() - lastPrint >= 5000 && HAL_GetTick() - lastPrint <= 5005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, 500);
-//		Motor_Drive(&robot.frontLeftMotor, 105);
-//	}
-//	if (HAL_GetTick() - lastPrint >= 10000 && HAL_GetTick() - lastPrint <= 10005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
-//		Motor_Drive(&robot.frontLeftMotor, 110);
-//	}
-//	if (HAL_GetTick() - lastPrint >= 15000 && HAL_GetTick() - lastPrint <= 15005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
-//		Motor_Drive(&robot.frontLeftMotor, 115);
-//	}
-//	if (HAL_GetTick() - lastPrint >= 20000 && HAL_GetTick() - lastPrint <= 20005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
-//		Motor_Drive(&robot.frontLeftMotor, 120);
-//	}
-//	if (HAL_GetTick() - lastPrint >= 25000 && HAL_GetTick() - lastPrint <= 25005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
-//		Motor_Drive(&robot.frontLeftMotor, 125);
-//	}
-//	if (HAL_GetTick() - lastPrint >= 30000 && HAL_GetTick() - lastPrint <= 30005){
-//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
-//		Motor_Drive(&robot.frontLeftMotor, 130);
-//	}
+
 
 
 	HAL_Delay(1);
