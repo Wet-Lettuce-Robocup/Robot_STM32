@@ -336,8 +336,8 @@ int Motor_FeedForward(int targetSpeed) {
         return 0;
     }
 
-    const double kS = 34.4;
-    const double kV = 0.085;
+    const double kS = 34;
+    const double kV = 0.075;
 
     int sign = targetSpeed > 0 ? 1 : -1;
 
@@ -722,7 +722,7 @@ void setupRobot(Robot *robot) {
 	robot->state = STATE_STOPPED;
 
 	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, false, 0.2);
-	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, 0.2);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, true, 0.2);
 	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, 0.2);
 	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.2);
 
@@ -1100,10 +1100,13 @@ void loop() {
 	if (HAL_GetTick() - lastPrint <= 1) {
 	    //lastPrint = HAL_GetTick();
 
-	    //Robot_DrivePID(&robot, 700, 0, 0);
-		Motor_DrivePID(&robot.backLeftMotor, 400);
+	    Robot_DrivePID(&robot, 750, 0, 0);
+//		Motor_DrivePID(&robot.backRightMotor, 750);
 
-		//Motor_Drive(&robot.frontLeftMotor, 150);
+//		Motor_Drive(&robot.frontLeftMotor, 90);
+//		Motor_Drive(&robot.frontRightMotor, 90);
+//		Motor_Drive(&robot.backLeftMotor, 90);
+//		Motor_Drive(&robot.backRightMotor, 90);
 
 	}
 //	if (HAL_GetTick() - lastPrint >= 5000 && HAL_GetTick() - lastPrint <= 5005){

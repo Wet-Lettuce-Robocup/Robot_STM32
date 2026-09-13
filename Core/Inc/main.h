@@ -164,7 +164,7 @@ typedef enum {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.1, 0.0, 0.0, 5000)
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.22, 0.01, 0.0, 5000)
 
 /* USER CODE END EM */
 
