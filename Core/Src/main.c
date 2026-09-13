@@ -330,6 +330,20 @@ int PID_Update(PID_Controller *controller, int error) {
 	return (int)result;
 }
 
+int Motor_FeedForward(int targetSpeed) {
+
+    if (targetSpeed == 0) {
+        return 0;
+    }
+
+    const double kS = 34.4;
+    const double kV = 0.085;
+
+    int sign = targetSpeed > 0 ? 1 : -1;
+
+    return sign * (kS + kV * abs(targetSpeed));
+}
+
 void Motor_Update(Motor *motor, bool updatePID) {
 	if (updatePID){
 		Encoder_Update(&motor->encoder);
@@ -340,9 +354,11 @@ void Motor_Update(Motor *motor, bool updatePID) {
 		int currentSpeed = motor->encoder.speed;
 		int error = motor->targetSpeed - currentSpeed;
 
+		int feedForward = Motor_FeedForward(motor->targetSpeed);
+
 		motor->pidOutput = PID_Update(&motor->controller, error);
 
-		Motor_Drive(motor, motor->pidOutput);
+		Motor_Drive(motor, feedForward + motor->pidOutput);
 	}
 
 	else if (motor->driveType == DISCRETE) {
@@ -705,10 +721,10 @@ void setupRobot(Robot *robot) {
 
 	robot->state = STATE_STOPPED;
 
-	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, false, 0.3);
-	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, 0.3);
-	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, 0.3);
-	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.3);
+	Motor_Init(&robot->frontRightMotor, clock, &htim2, &htim5, TIM_CHANNEL_3, GPIOD, GPIO_PIN_9, GPIOD, GPIO_PIN_7, false, 0.2);
+	Motor_Init(&robot->frontLeftMotor, clock, &htim3, &htim5, TIM_CHANNEL_4, GPIOD, GPIO_PIN_8, GPIOB, GPIO_PIN_0, false, 0.2);
+	Motor_Init(&robot->backRightMotor, clock, &htim4, &htim5, TIM_CHANNEL_1, GPIOD, GPIO_PIN_11, GPIOD, GPIO_PIN_14, true, 0.2);
+	Motor_Init(&robot->backLeftMotor, clock, &htim1, &htim5, TIM_CHANNEL_2, GPIOD, GPIO_PIN_10, GPIOE, GPIO_PIN_12, false, 0.2);
 
 	robot->cyclesSinceStop = 0;
 	robot->cyclesDelay = 300;
@@ -1084,14 +1100,37 @@ void loop() {
 	if (HAL_GetTick() - lastPrint <= 1) {
 	    //lastPrint = HAL_GetTick();
 
-	    //Robot_DrivePID(&robot, 200, 0, 0);
-		//Motor_DrivePID(&robot.frontLeftMotor, 1200);
+	    //Robot_DrivePID(&robot, 700, 0, 0);
+		Motor_DrivePID(&robot.backLeftMotor, 400);
 
 		//Motor_Drive(&robot.frontLeftMotor, 150);
 
-
-
 	}
+//	if (HAL_GetTick() - lastPrint >= 5000 && HAL_GetTick() - lastPrint <= 5005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, 500);
+//		Motor_Drive(&robot.frontLeftMotor, 105);
+//	}
+//	if (HAL_GetTick() - lastPrint >= 10000 && HAL_GetTick() - lastPrint <= 10005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
+//		Motor_Drive(&robot.frontLeftMotor, 110);
+//	}
+//	if (HAL_GetTick() - lastPrint >= 15000 && HAL_GetTick() - lastPrint <= 15005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
+//		Motor_Drive(&robot.frontLeftMotor, 115);
+//	}
+//	if (HAL_GetTick() - lastPrint >= 20000 && HAL_GetTick() - lastPrint <= 20005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
+//		Motor_Drive(&robot.frontLeftMotor, 120);
+//	}
+//	if (HAL_GetTick() - lastPrint >= 25000 && HAL_GetTick() - lastPrint <= 25005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
+//		Motor_Drive(&robot.frontLeftMotor, 125);
+//	}
+//	if (HAL_GetTick() - lastPrint >= 30000 && HAL_GetTick() - lastPrint <= 30005){
+//		//Motor_DrivePID(&robot.frontLeftMotor, -800);
+//		Motor_Drive(&robot.frontLeftMotor, 130);
+//	}
+
 
 	HAL_Delay(1);
 }

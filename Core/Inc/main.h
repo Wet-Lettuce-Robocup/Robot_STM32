@@ -164,7 +164,7 @@ typedef enum {
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.50, 0.0, 0.0, 5000)
+#define __PID_INIT_DEFAULT(controller, clock, encoder) PID_Init(controller, clock, encoder, 0.1, 0.0, 0.0, 5000)
 
 /* USER CODE END EM */
 
@@ -207,6 +207,7 @@ void UltraS_SendPulse(UltraS *ultrasonic);
 
 void Encoder_Update(Encoder *encoder);
 int PID_Update(PID_Controller *controller, int error);
+int Motor_FeedForward(int targetSpeed);
 void PID_Reset(PID_Controller *controller);
 void Motor_Update(Motor *motor, bool updatePID);
 void Robot_Update(Robot *robot);
