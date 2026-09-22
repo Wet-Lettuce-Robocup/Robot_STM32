@@ -60,6 +60,24 @@ volatile uint8_t tx_length = 0;
 volatile uint8_t queue_head = 0;
 volatile uint8_t queue_tail = 0;
 
+volatile int32_t temp = 0;
+
+volatile uint32_t i2c_last_error = 0;
+volatile uint32_t i2c_error_count = 0;
+volatile uint32_t i2c_addr_count = 0;
+volatile uint32_t i2c_rx_count = 0;
+volatile uint32_t i2c_tx_count = 0;
+volatile uint32_t i2c_data_rx_count = 0;
+
+volatile uint32_t i2c_rx_cmd_count = 0;
+volatile uint8_t i2c_last_command = 0;
+volatile uint8_t i2c_last_rx_length = 0;
+volatile uint32_t i2c_last_receive_start_status = 0;
+volatile uint32_t i2c_receive_start_errors = 0;
+volatile uint32_t some_counter = 0;
+
+volatile bool i2c_recovery_required = false;
+
 volatile bool servos_active = false;
 
 Robot robot;
@@ -104,7 +122,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-   HAL_Init();
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -284,6 +302,24 @@ void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigP
 // ==========================================
 // Updating
 // ==========================================
+
+
+void I2C_Recover(void)
+{
+    HAL_I2C_DisableListen_IT(&hi2c1);
+
+    HAL_I2C_DeInit(&hi2c1);
+
+    HAL_Delay(1);
+
+    HAL_I2C_Init(&hi2c1);
+
+    i2c_state = STATE_IDLE;
+
+    HAL_I2C_EnableListen_IT(&hi2c1);
+
+    i2c_recovery_required = false;
+}
 
 void Encoder_Update(Encoder *encoder) {
 	uint16_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
@@ -1013,9 +1049,7 @@ void PrepareResponseData(uint8_t cmd) {
         	break;
 
         case CMD_READ_TEMP:
-        	float temp = Read_Internal_Temp();
-        	uint32_t temp_int = 100 * temp;
-        	InsertIntoBuffer(temp_int, (uint8_t *)tx_buffer);
+        	InsertIntoBuffer(temp, (uint8_t *)tx_buffer);
         	break;
 
         case CMD_READ_MOVE_C:
@@ -1118,9 +1152,19 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode) {
+	if (hi2c->Instance != I2C1)
+			return;
+	i2c_addr_count++;
+
+	HAL_StatusTypeDef status;
+
     if (TransferDirection == I2C_DIRECTION_TRANSMIT) {
         i2c_state = STATE_WAIT_COMMAND;
-        HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)rx_buffer[queue_head], 1, I2C_FIRST_FRAME);
+        status = HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)rx_buffer[queue_head], 1, I2C_FIRST_FRAME);
+        if (status != HAL_OK)
+        {
+            // uh oh
+        }
     }
 
     else {
@@ -1132,43 +1176,61 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
             HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)tx_buffer, tx_length, I2C_LAST_FRAME);
         } else {
             i2c_state = STATE_IDLE;
-            HAL_I2C_EnableListen_IT(hi2c);
         }
     }
 }
 
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+	if (hi2c->Instance != I2C1)
+		return;
+	i2c_rx_count++;
+
     if (i2c_state == STATE_WAIT_COMMAND) {
         // Command byte received
+    	i2c_rx_cmd_count++;
     	uint8_t command_byte = rx_buffer[queue_head][0];
+        i2c_last_command = command_byte;
 
         if (IsReadCommand(command_byte)) {
         	tx_command_byte = command_byte;
             i2c_state = STATE_IDLE;
             HAL_I2C_EnableListen_IT(hi2c);
+            return;
         }
-        else {
-            rx_length = GetRxLengthForCommand(command_byte);
 
-            if (rx_length > 0) {
-                i2c_state = STATE_WAIT_DATA;
-                HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)(rx_buffer[queue_head] + 1), rx_length, I2C_LAST_FRAME);
-            } else {
-            	uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
+		rx_length = GetRxLengthForCommand(command_byte);
+        i2c_last_rx_length = rx_length;
 
-            	if (next_head != queue_tail) {
-        			queue_head = next_head;
-        		} else {
-        			// ERROR: Queue is completely full! Main loop is lagging too far behind.
-        		}
+		if (rx_length > 0) {
+			i2c_state = STATE_WAIT_DATA;
+			 HAL_StatusTypeDef status = HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)(rx_buffer[queue_head] + 1), rx_length, I2C_LAST_FRAME);
+			 if (status != HAL_OK){
+				i2c_receive_start_errors++;
+				i2c_last_receive_start_status = status;
+			}
+		}
+		else if (command_byte == CMD_STOP || command_byte == CMD_STOP_SERVOS ||
+		                     command_byte == CMD_EN_ULTRAS || command_byte == CMD_STOP_ULTRAS) {
+			uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
 
-                i2c_state = STATE_IDLE;
-                HAL_I2C_EnableListen_IT(hi2c);
-            }
-        }
-    }
+			if (next_head != queue_tail) {
+				queue_head = next_head;
+			}
+			else {
+				// ERROR: Queue is completely full! Main loop is lagging too far behind.
+			}
+
+			i2c_state = STATE_IDLE;
+			HAL_I2C_EnableListen_IT(hi2c);
+		}
+		else {
+			some_counter++;
+		}
+	}
     else if (i2c_state == STATE_WAIT_DATA) {
     	uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
+
+        i2c_data_rx_count++;
 
     	if (next_head != queue_tail) {
 			queue_head = next_head;
@@ -1183,20 +1245,43 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 
 void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
     // Data transmission to master complete
+    if (hi2c->Instance != I2C1)
+        return;
+    i2c_tx_count++;
     i2c_state = STATE_IDLE;
     HAL_I2C_EnableListen_IT(hi2c);
 }
 
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
     // Re-enable listening for next transaction
+	if (hi2c->Instance != I2C1)
+	        return;
+
+	i2c_state = STATE_IDLE;
     HAL_I2C_EnableListen_IT(hi2c);
 }
 
 // I2C Error Callback
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
     // Handle error - reset state and re-enable listening
-    i2c_state = STATE_IDLE;
-    HAL_I2C_EnableListen_IT(hi2c);
+	if (hi2c->Instance != I2C1)
+	        return;
+
+	uint32_t error = HAL_I2C_GetError(hi2c);
+	i2c_last_error = error;
+	i2c_error_count++;
+
+	if (error & HAL_I2C_ERROR_AF)
+	    {
+	        i2c_state = STATE_IDLE;
+	        HAL_I2C_EnableListen_IT(hi2c);
+	}
+	else {
+
+		i2c_state = STATE_IDLE;
+
+		i2c_recovery_required = true;
+	}
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
@@ -1252,6 +1337,12 @@ void setup() {
 }
 
 void loop() {
+
+	if (i2c_recovery_required)
+	    {
+	        I2C_Recover();
+	    }
+
 	while (queue_tail != queue_head) {
 		ProcessReceivedData(rx_buffer[queue_tail][0], (uint8_t*)(rx_buffer[queue_tail] + 1));
 		queue_tail = (queue_tail + 1) % QUEUE_SIZE;
@@ -1262,6 +1353,16 @@ void loop() {
 	// Robot_Drive(&robot, 2000, 0, 0);
 	Robot_Update(&robot);
 	UltraS_Update(&ultrasonic);
+
+	static uint32_t lastTempUpdate = 0;
+
+	if (HAL_GetTick() - lastTempUpdate >= 500)
+	{
+	    lastTempUpdate = HAL_GetTick();
+
+	    float temp_float = Read_Internal_Temp();
+	    temp = (int32_t)(temp_float * 100.0f);
+	}
 
 	static bool testStarted = false;
 
