@@ -76,6 +76,14 @@ volatile uint32_t i2c_last_receive_start_status = 0;
 volatile uint32_t i2c_receive_start_errors = 0;
 volatile uint32_t some_counter = 0;
 
+#define I2C_TRANSACTION_TIMEOUT_MS 100U
+
+volatile uint32_t i2c_transaction_start_tick = 0;
+volatile uint32_t i2c_last_progress_tick = 0;
+volatile uint32_t i2c_timeout_count = 0;
+volatile uint32_t i2c_recovery_count = 0;
+volatile bool i2c_recovery_in_progress = false;
+
 volatile bool i2c_recovery_required = false;
 
 volatile bool servos_active = false;
@@ -304,21 +312,65 @@ void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigP
 // ==========================================
 
 
+static void I2C_MarkProgress(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    i2c_last_progress_tick = now;
+}
+
+static void I2C_CheckTimeout(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (i2c_state == STATE_IDLE)
+        return;
+
+    if ((now - i2c_last_progress_tick) < I2C_TRANSACTION_TIMEOUT_MS)
+        return;
+
+    /*
+     * The application believes a transaction is active,
+     * but nothing has happened for too long.
+     */
+    i2c_timeout_count++;
+    i2c_recovery_required = true;
+
+    i2c_state = STATE_IDLE;
+}
+
+
 void I2C_Recover(void)
 {
+	if (i2c_recovery_in_progress)
+	        return;
+
+	i2c_recovery_in_progress = true;
+	    i2c_recovery_count++;
+
     HAL_I2C_DisableListen_IT(&hi2c1);
 
     HAL_I2C_DeInit(&hi2c1);
 
     HAL_Delay(1);
 
-    HAL_I2C_Init(&hi2c1);
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+        {
+            i2c_recovery_in_progress = false;
+            return;
+        }
 
     i2c_state = STATE_IDLE;
+    i2c_last_progress_tick = HAL_GetTick();
 
-    HAL_I2C_EnableListen_IT(&hi2c1);
+    if (HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK)
+        {
+            i2c_recovery_in_progress = false;
+            return;
+        }
 
     i2c_recovery_required = false;
+    i2c_recovery_in_progress = false;
 }
 
 void Encoder_Update(Encoder *encoder) {
@@ -1155,6 +1207,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 	if (hi2c->Instance != I2C1)
 			return;
 	i2c_addr_count++;
+    I2C_MarkProgress();
 
 	HAL_StatusTypeDef status;
 
@@ -1184,6 +1237,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 	if (hi2c->Instance != I2C1)
 		return;
 	i2c_rx_count++;
+    I2C_MarkProgress();
 
     if (i2c_state == STATE_WAIT_COMMAND) {
         // Command byte received
@@ -1198,6 +1252,8 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
             return;
         }
 
+        i2c_state = STATE_COMMAND_READ;
+
 		rx_length = GetRxLengthForCommand(command_byte);
         i2c_last_rx_length = rx_length;
 
@@ -1207,6 +1263,8 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 			 if (status != HAL_OK){
 				i2c_receive_start_errors++;
 				i2c_last_receive_start_status = status;
+                i2c_state = STATE_IDLE;
+				i2c_recovery_required = true;
 			}
 		}
 		else if (command_byte == CMD_STOP || command_byte == CMD_STOP_SERVOS ||
@@ -1248,8 +1306,15 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
     if (hi2c->Instance != I2C1)
         return;
     i2c_tx_count++;
+    I2C_MarkProgress();
+
     i2c_state = STATE_IDLE;
-    HAL_I2C_EnableListen_IT(hi2c);
+
+    HAL_StatusTypeDef status = HAL_I2C_EnableListen_IT(hi2c);
+    if (status != HAL_OK)
+        {
+            i2c_recovery_required = true;
+        }
 }
 
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
@@ -1257,8 +1322,16 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
 	if (hi2c->Instance != I2C1)
 	        return;
 
+    I2C_MarkProgress();
+
 	i2c_state = STATE_IDLE;
-    HAL_I2C_EnableListen_IT(hi2c);
+
+    HAL_StatusTypeDef status = HAL_I2C_EnableListen_IT(hi2c);
+
+	if (status != HAL_OK)
+        {
+            i2c_recovery_required = true;
+        }
 }
 
 // I2C Error Callback
@@ -1271,17 +1344,18 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 	i2c_last_error = error;
 	i2c_error_count++;
 
-	if (error & HAL_I2C_ERROR_AF)
+	if ((error & HAL_I2C_ERROR_AF) && (i2c_state == STATE_SEND_RESPONSE))
 	    {
 	        i2c_state = STATE_IDLE;
-	        HAL_I2C_EnableListen_IT(hi2c);
+	        if (HAL_I2C_EnableListen_IT(hi2c) != HAL_OK)
+				{
+					i2c_recovery_required = true;
+				}
+	        return;
 	}
-	else {
 
-		i2c_state = STATE_IDLE;
-
-		i2c_recovery_required = true;
-	}
+	i2c_state = STATE_IDLE;
+	i2c_recovery_required = true;
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
@@ -1338,6 +1412,7 @@ void setup() {
 
 void loop() {
 
+    I2C_CheckTimeout();
 	if (i2c_recovery_required)
 	    {
 	        I2C_Recover();
