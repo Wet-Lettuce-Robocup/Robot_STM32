@@ -62,30 +62,6 @@ volatile uint8_t queue_tail = 0;
 
 volatile int32_t temp = 0;
 
-volatile uint32_t i2c_last_error = 0;
-volatile uint32_t i2c_error_count = 0;
-volatile uint32_t i2c_addr_count = 0;
-volatile uint32_t i2c_rx_count = 0;
-volatile uint32_t i2c_tx_count = 0;
-volatile uint32_t i2c_data_rx_count = 0;
-
-volatile uint32_t i2c_rx_cmd_count = 0;
-volatile uint8_t i2c_last_command = 0;
-volatile uint8_t i2c_last_rx_length = 0;
-volatile uint32_t i2c_last_receive_start_status = 0;
-volatile uint32_t i2c_receive_start_errors = 0;
-volatile uint32_t some_counter = 0;
-
-#define I2C_TRANSACTION_TIMEOUT_MS 100U
-
-volatile uint32_t i2c_transaction_start_tick = 0;
-volatile uint32_t i2c_last_progress_tick = 0;
-volatile uint32_t i2c_timeout_count = 0;
-volatile uint32_t i2c_recovery_count = 0;
-volatile bool i2c_recovery_in_progress = false;
-
-volatile bool i2c_recovery_required = false;
-
 volatile bool servos_active = false;
 
 Robot robot;
@@ -310,68 +286,6 @@ void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigP
 // ==========================================
 // Updating
 // ==========================================
-
-
-static void I2C_MarkProgress(void)
-{
-    uint32_t now = HAL_GetTick();
-
-    i2c_last_progress_tick = now;
-}
-
-static void I2C_CheckTimeout(void)
-{
-    uint32_t now = HAL_GetTick();
-
-    if (i2c_state == STATE_IDLE)
-        return;
-
-    if ((now - i2c_last_progress_tick) < I2C_TRANSACTION_TIMEOUT_MS)
-        return;
-
-    /*
-     * The application believes a transaction is active,
-     * but nothing has happened for too long.
-     */
-    i2c_timeout_count++;
-    i2c_recovery_required = true;
-
-    i2c_state = STATE_IDLE;
-}
-
-
-void I2C_Recover(void)
-{
-	if (i2c_recovery_in_progress)
-	        return;
-
-	i2c_recovery_in_progress = true;
-	    i2c_recovery_count++;
-
-    HAL_I2C_DisableListen_IT(&hi2c1);
-
-    HAL_I2C_DeInit(&hi2c1);
-
-    HAL_Delay(1);
-
-    if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-        {
-            i2c_recovery_in_progress = false;
-            return;
-        }
-
-    i2c_state = STATE_IDLE;
-    i2c_last_progress_tick = HAL_GetTick();
-
-    if (HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK)
-        {
-            i2c_recovery_in_progress = false;
-            return;
-        }
-
-    i2c_recovery_required = false;
-    i2c_recovery_in_progress = false;
-}
 
 void Encoder_Update(Encoder *encoder) {
 	uint16_t currentTime = __HAL_TIM_GET_COUNTER(encoder->clock);
@@ -1206,8 +1120,6 @@ void ProcessReceivedData(uint8_t cmd, uint8_t *data) {
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode) {
 	if (hi2c->Instance != I2C1)
 			return;
-	i2c_addr_count++;
-    I2C_MarkProgress();
 
 	HAL_StatusTypeDef status;
 
@@ -1236,14 +1148,10 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 	if (hi2c->Instance != I2C1)
 		return;
-	i2c_rx_count++;
-    I2C_MarkProgress();
 
     if (i2c_state == STATE_WAIT_COMMAND) {
         // Command byte received
-    	i2c_rx_cmd_count++;
     	uint8_t command_byte = rx_buffer[queue_head][0];
-        i2c_last_command = command_byte;
 
         if (IsReadCommand(command_byte)) {
         	tx_command_byte = command_byte;
@@ -1255,16 +1163,12 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
         i2c_state = STATE_COMMAND_READ;
 
 		rx_length = GetRxLengthForCommand(command_byte);
-        i2c_last_rx_length = rx_length;
 
 		if (rx_length > 0) {
 			i2c_state = STATE_WAIT_DATA;
 			 HAL_StatusTypeDef status = HAL_I2C_Slave_Seq_Receive_IT(hi2c, (uint8_t*)(rx_buffer[queue_head] + 1), rx_length, I2C_LAST_FRAME);
 			 if (status != HAL_OK){
-				i2c_receive_start_errors++;
-				i2c_last_receive_start_status = status;
                 i2c_state = STATE_IDLE;
-				i2c_recovery_required = true;
 			}
 		}
 		else if (command_byte == CMD_STOP || command_byte == CMD_STOP_SERVOS ||
@@ -1282,13 +1186,11 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
 			HAL_I2C_EnableListen_IT(hi2c);
 		}
 		else {
-			some_counter++;
+			//not good
 		}
 	}
     else if (i2c_state == STATE_WAIT_DATA) {
     	uint8_t next_head = (queue_head + 1) % QUEUE_SIZE;
-
-        i2c_data_rx_count++;
 
     	if (next_head != queue_tail) {
 			queue_head = next_head;
@@ -1305,15 +1207,13 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
     // Data transmission to master complete
     if (hi2c->Instance != I2C1)
         return;
-    i2c_tx_count++;
-    I2C_MarkProgress();
 
     i2c_state = STATE_IDLE;
 
     HAL_StatusTypeDef status = HAL_I2C_EnableListen_IT(hi2c);
     if (status != HAL_OK)
         {
-            i2c_recovery_required = true;
+    	// bad
         }
 }
 
@@ -1322,15 +1222,13 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
 	if (hi2c->Instance != I2C1)
 	        return;
 
-    I2C_MarkProgress();
-
 	i2c_state = STATE_IDLE;
 
     HAL_StatusTypeDef status = HAL_I2C_EnableListen_IT(hi2c);
 
 	if (status != HAL_OK)
         {
-            i2c_recovery_required = true;
+            // not great
         }
 }
 
@@ -1341,21 +1239,18 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
 	        return;
 
 	uint32_t error = HAL_I2C_GetError(hi2c);
-	i2c_last_error = error;
-	i2c_error_count++;
 
 	if ((error & HAL_I2C_ERROR_AF) && (i2c_state == STATE_SEND_RESPONSE))
 	    {
 	        i2c_state = STATE_IDLE;
 	        if (HAL_I2C_EnableListen_IT(hi2c) != HAL_OK)
 				{
-					i2c_recovery_required = true;
+					// also not good
 				}
 	        return;
 	}
 
 	i2c_state = STATE_IDLE;
-	i2c_recovery_required = true;
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
@@ -1411,12 +1306,6 @@ void setup() {
 }
 
 void loop() {
-
-    I2C_CheckTimeout();
-	if (i2c_recovery_required)
-	    {
-	        I2C_Recover();
-	    }
 
 	while (queue_tail != queue_head) {
 		ProcessReceivedData(rx_buffer[queue_tail][0], (uint8_t*)(rx_buffer[queue_tail] + 1));

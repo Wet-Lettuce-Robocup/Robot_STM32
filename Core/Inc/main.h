@@ -197,10 +197,6 @@ void Servo_Init(Servo *servo, TIM_HandleTypeDef *pwmTimer, uint8_t pwmChannel);
 void UltraS_Init(UltraS *ultrasonic, GPIO_TypeDef *trigPeripheral,uint16_t trigPin,
 		TIM_HandleTypeDef *echoTimer, uint8_t echoChannel, uint32_t delayTime);
 
-static void I2C_MarkProgress(void);
-static void I2C_CheckTimeout(void);
-void I2C_Recover(void);
-
 void Motor_Drive(Motor *motor, int speed);
 void Motor_DrivePID(Motor *motor, int speed);
 void Motor_DriveDiscrete(Motor *motor, int speed);
