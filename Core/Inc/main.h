@@ -266,7 +266,7 @@ float Read_Internal_Temp();
 #define CMD_READ_MOVE_C 0x85  // Publish 4 bytes
 
 #define SERVO_COUNT 	3
-#define QUEUE_SIZE      8
+#define QUEUE_SIZE      16
 #define PACKET_SIZE     32
 
 #define PID_DT 			0.05

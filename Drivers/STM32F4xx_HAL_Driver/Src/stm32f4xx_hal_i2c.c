@@ -6095,6 +6095,8 @@ static void I2C_SlaveReceive_RXNE(I2C_HandleTypeDef *hi2c)
   */
 static void I2C_SlaveReceive_BTF(I2C_HandleTypeDef *hi2c)
 {
+  HAL_I2C_StateTypeDef CurrentState = hi2c->State;
+
   if (hi2c->XferCount != 0U)
   {
     /* Read data from DR */
@@ -6105,6 +6107,22 @@ static void I2C_SlaveReceive_BTF(I2C_HandleTypeDef *hi2c)
 
     /* Update counter */
     hi2c->XferCount--;
+
+    if ((hi2c->XferCount == 0U) && (CurrentState == HAL_I2C_STATE_BUSY_RX_LISTEN)) {
+		/* Last byte received: disable buffer interrupt */
+		__HAL_I2C_DISABLE_IT(hi2c, I2C_IT_BUF);
+
+		/* Return to listen state */
+		hi2c->PreviousState = I2C_STATE_SLAVE_BUSY_RX;
+		hi2c->State = HAL_I2C_STATE_LISTEN;
+
+#if (USE_HAL_I2C_REGISTER_CALLBACKS == 1)
+			hi2c->SlaveRxCpltCallback(hi2c);
+#else
+			HAL_I2C_SlaveRxCpltCallback(hi2c);
+#endif
+    }
+
   }
 }
 
