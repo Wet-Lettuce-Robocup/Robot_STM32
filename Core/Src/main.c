@@ -541,7 +541,13 @@ void Motor_Drive(Motor *motor, int speed) {
 }
 
 void Motor_DrivePID(Motor *motor, int speed) {
-	if (motor->driveType != PID || abs(speed - motor->targetSpeed) > 250) {
+	bool directionChanged =
+		(motor->targetSpeed > 0 && speed < 0) ||
+		(motor->targetSpeed < 0 && speed > 0);
+
+	if (motor->driveType != PID ||
+		abs(speed - motor->targetSpeed) > 250 ||
+		directionChanged) {
 		PID_Reset(&motor->controller);
 	}
 
@@ -647,15 +653,46 @@ void Robot_CalculateWheelSpeeds(
 	}
 }
 
+int Motor_EnsureMinimumSpeed(int speed)
+{
+    if (speed == 0) {
+        return 0;
+    }
+
+    int sign = speed > 0 ? 1 : -1;
+    int magnitude = abs(speed);
+
+    if (magnitude < MIN_WHEEL_SPEED) {
+        magnitude = MIN_WHEEL_SPEED;
+    }
+
+    if (magnitude > MAX_WHEEL_SPEED) {
+        magnitude = MAX_WHEEL_SPEED;
+    }
+
+    return sign * magnitude;
+}
+
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn) {
 	// HAL_GPIO_WritePin(robot->regEnablePeripheral, robot->regEnablePin, GPIO_PIN_SET);
 
 	robot->motion = MOTION_NONE;
 
-	int frontLeftSpeed = speed + strafe + turn;
-	int frontRightSpeed = speed - strafe - turn;
-	int backLeftSpeed = speed - strafe + turn;
-	int backRightSpeed = speed + strafe - turn;
+//	int frontLeftSpeed = speed + strafe + turn;
+//	int frontRightSpeed = speed - strafe - turn;
+//	int backLeftSpeed = speed - strafe + turn;
+//	int backRightSpeed = speed + strafe - turn;
+
+	int frontLeftSpeed = speed + turn;
+	int frontRightSpeed = speed - turn;
+	int backLeftSpeed = speed + turn;
+	int backRightSpeed = speed - turn;
+
+	frontLeftSpeed = Motor_EnsureMinimumSpeed(frontLeftSpeed);
+	frontRightSpeed = Motor_EnsureMinimumSpeed(frontRightSpeed);
+	backLeftSpeed = Motor_EnsureMinimumSpeed(backLeftSpeed);
+	backRightSpeed = Motor_EnsureMinimumSpeed(backRightSpeed);
+
 
 	Motor_DrivePID(&robot->frontLeftMotor, frontLeftSpeed);
 	Motor_DrivePID(&robot->frontRightMotor, frontRightSpeed);
@@ -707,7 +744,7 @@ void Robot_TurnAngle(Robot *robot, int angle_deg, int speed) {
 
 	float turnDistanceMM = (fabsf(angle_deg) / 360.0f) * M_PI * TRACK_WIDTH_MM;
 
-    turnDistanceMM *= 2.0f;
+    turnDistanceMM *= 1.68f;
 
     float countsPerMM = ENCODER_COUNTS_PER_REV / wheelCircumference;
 

@@ -205,6 +205,7 @@ bool Motor_CheckFault(Motor *motor);
 
 void Robot_CalculateWheelSpeeds(int speed, int strafe, int turn, int *frontLeftSpeed,
 		int *frontRightSpeed, int *backLeftSpeed, int *backRightSpeed);
+int Motor_EnsureMinimumSpeed(int speed);
 
 void Robot_Drive(Robot *robot, int speed, int strafe, int turn);
 void Robot_DrivePID(Robot *robot, int speed, int strafe, int turn);
@@ -268,8 +269,11 @@ float Read_Internal_Temp();
 #define PID_DT 			0.05
 
 #define ENCODER_COUNTS_PER_REV 1000.0
-#define WHEEL_DIAMETER_MM 79.0
-#define TRACK_WIDTH_MM 165.0
+#define WHEEL_DIAMETER_MM 59.5
+#define TRACK_WIDTH_MM 160.0
+
+#define MIN_WHEEL_SPEED 120
+#define MAX_WHEEL_SPEED 1000
 
 /* USER CODE END Private defines */
 
